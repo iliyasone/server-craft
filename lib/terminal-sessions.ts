@@ -1,4 +1,5 @@
 import { Client } from 'ssh2'
+import { SERVERS_DIR } from './servers'
 
 interface TerminalSession {
   stream: NodeJS.ReadWriteStream
@@ -27,7 +28,8 @@ function isStreamAlive(session: TerminalSession): boolean {
 
 export async function getOrCreateTerminalSession(
   serverId: string,
-  client: Client
+  client: Client,
+  options?: { rootShell?: boolean }
 ): Promise<TerminalSession> {
   const existing = global.terminalSessions!.get(serverId)
 
@@ -85,10 +87,22 @@ export async function getOrCreateTerminalSession(
 
       resolve(newSession)
 
-      // Attach to tmux session
-      stream.write(
-        `tmux attach-session -t craft-${serverId} 2>/dev/null || (echo "Session not started" && sleep 999999)\n`
-      )
+      if (options?.rootShell) {
+        // Root terminal: plain shell, no tmux
+      } else {
+        // Ensure tmux session exists and attach to it
+        // Falls back to a plain shell in the server dir if tmux is unavailable
+        stream.write(
+          `mkdir -p ${SERVERS_DIR}/${serverId} 2>/dev/null; ` +
+          `if command -v tmux >/dev/null 2>&1; then ` +
+            `tmux has-session -t craft-${serverId} 2>/dev/null || ` +
+            `tmux new-session -d -s craft-${serverId} -c ${SERVERS_DIR}/${serverId}; ` +
+            `tmux attach-session -t craft-${serverId}; ` +
+          `else ` +
+            `cd ${SERVERS_DIR}/${serverId}; ` +
+          `fi\n`
+        )
+      }
     })
   })
 

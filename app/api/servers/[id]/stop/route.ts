@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient } from '@/lib/ssh'
-import { stopServer } from '@/lib/servers'
+import { writeToTerminal } from '@/lib/terminal-sessions'
 
 export async function POST(
   _request: NextRequest,
@@ -13,8 +13,11 @@ export async function POST(
   const { id } = await params
 
   try {
-    const client = await getSSHClient(session.host, session.username, session.password)
-    await stopServer(client, id)
+    await getSSHClient(session.host, session.username, session.password)
+
+    // Send Ctrl+C to the terminal (kills whatever is running in tmux)
+    writeToTerminal(id, '\x03')
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to stop server'

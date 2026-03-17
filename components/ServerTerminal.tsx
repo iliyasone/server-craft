@@ -4,9 +4,12 @@ import { useEffect, useRef } from 'react'
 
 interface ServerTerminalProps {
   serverId: string
+  terminalApiBase?: string // defaults to /api/servers/${serverId}/terminal
 }
 
-export default function ServerTerminal({ serverId }: ServerTerminalProps) {
+export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerminalProps) {
+  const sseUrl = terminalApiBase ?? `/api/servers/${serverId}/terminal`
+  const inputUrl = terminalApiBase ? `${terminalApiBase}/input` : `/api/servers/${serverId}/terminal/input`
   const termRef = useRef<HTMLDivElement>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const xtermRef = useRef<any>(null)
@@ -58,7 +61,7 @@ export default function ServerTerminal({ serverId }: ServerTerminalProps) {
 
       // Handle user input
       terminal.onData((data: string) => {
-        fetch(`/api/servers/${serverId}/terminal/input`, {
+        fetch(inputUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ data }),
@@ -66,7 +69,7 @@ export default function ServerTerminal({ serverId }: ServerTerminalProps) {
       })
 
       // Connect SSE
-      const sse = new EventSource(`/api/servers/${serverId}/terminal`)
+      const sse = new EventSource(sseUrl)
       sseRef.current = sse
 
       sse.onmessage = (event) => {
@@ -99,7 +102,8 @@ export default function ServerTerminal({ serverId }: ServerTerminalProps) {
       sseRef.current?.close()
       xtermRef.current?.dispose()
     }
-  }, [serverId])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverId, sseUrl, inputUrl])
 
   return (
     <div

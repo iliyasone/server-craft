@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient, getSFTP } from '@/lib/ssh'
+import { SERVERS_DIR } from '@/lib/servers'
 import { writeFile, unlink, mkdtemp } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -12,7 +13,7 @@ export async function POST(
   const session = await getSession()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  await params // resolve params
+  await params
 
   try {
     const formData = await request.formData()
@@ -23,8 +24,7 @@ export async function POST(
       return NextResponse.json({ error: 'Missing path or files' }, { status: 400 })
     }
 
-    // Ensure destination is within /servers
-    if (!destPath.startsWith('/servers/')) {
+    if (!destPath.startsWith(SERVERS_DIR + '/')) {
       return NextResponse.json({ error: 'Invalid destination path' }, { status: 400 })
     }
 

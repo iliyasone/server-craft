@@ -18,8 +18,12 @@ export async function POST(request: NextRequest) {
     // Try to connect
     const client = await getSSHClient(host, username, password)
 
-    // Ensure /servers directory exists
-    await execCommand(client, 'mkdir -p /servers')
+    // Ensure servers directory exists and tmux is installed
+    await execCommand(client, 'mkdir -p /home/server-craft')
+    await execCommand(
+      client,
+      'which tmux >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq tmux 2>/dev/null || yum install -y tmux 2>/dev/null || apk add tmux 2>/dev/null) >/dev/null 2>&1'
+    )
 
     // Create session token
     const token = await createSession({ host, username, password })

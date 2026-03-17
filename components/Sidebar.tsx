@@ -17,6 +17,7 @@ export default function Sidebar() {
   const [servers, setServers] = useState<Server[]>([])
   const [showNewServer, setShowNewServer] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [username, setUsername] = useState<string | null>(null)
 
   const fetchServers = useCallback(async () => {
     try {
@@ -34,6 +35,13 @@ export default function Sidebar() {
   useEffect(() => {
     fetchServers()
     const interval = setInterval(fetchServers, 5000)
+
+    // Get username for root terminal link
+    fetch('/api/auth/me')
+      .then((r) => r.json())
+      .then((d) => { if (d.username) setUsername(d.username) })
+      .catch(() => {})
+
     return () => clearInterval(interval)
   }, [fetchServers])
 
@@ -45,40 +53,36 @@ export default function Sidebar() {
   const activeId = pathname.startsWith('/servers/')
     ? pathname.split('/servers/')[1]?.split('/')[0]
     : undefined
+  const onTerminal = pathname === '/terminal'
 
   return (
     <>
       <aside
         style={{
           background: '#300a2e',
-          width: '240px',
-          minWidth: '240px',
+          width: '220px',
+          minWidth: '220px',
           height: '100vh',
           display: 'flex',
           flexDirection: 'column',
-          borderRight: '1px solid #fd87f680',
+          borderRight: '1px solid #fd87f640',
           overflowY: 'auto',
         }}
       >
         {/* Logo */}
-        <div style={{ padding: '24px 20px 16px' }}>
+        <div style={{ padding: '20px 16px 12px' }}>
           <Link href="/dashboard" style={{ textDecoration: 'none' }}>
             <h1
               className="font-title"
-              style={{
-                color: 'white',
-                fontSize: '24px',
-                margin: 0,
-                lineHeight: 1.2,
-              }}
+              style={{ color: 'white', fontSize: '22px', margin: 0, lineHeight: 1.2 }}
             >
-              Server Craft
+              ServerCraft
             </h1>
           </Link>
         </div>
 
         {/* New Server button */}
-        <div style={{ padding: '0 12px 16px' }}>
+        <div style={{ padding: '0 10px 12px' }}>
           <button
             onClick={() => setShowNewServer(true)}
             style={{
@@ -86,37 +90,33 @@ export default function Sidebar() {
               color: '#20141f',
               border: 'none',
               borderRadius: '8px',
-              padding: '8px 16px',
+              padding: '7px 14px',
               width: '100%',
               cursor: 'pointer',
               fontWeight: '700',
-              fontSize: '14px',
+              fontSize: '13px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '6px',
+              gap: '5px',
             }}
           >
-            + new server
+            + New Server
           </button>
         </div>
 
-        <div style={{ padding: '0 12px', marginBottom: '8px' }}>
-          <span style={{ color: '#876f86', fontSize: '12px', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            All servers
+        <div style={{ padding: '0 12px', marginBottom: '6px' }}>
+          <span style={{ color: '#61475f', fontSize: '11px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Servers
           </span>
         </div>
 
         {/* Server list */}
         <nav style={{ flex: 1, padding: '0 8px' }}>
           {loading ? (
-            <div style={{ color: '#876f86', padding: '8px 12px', fontSize: '14px' }}>
-              Loading...
-            </div>
+            <div style={{ color: '#61475f', padding: '8px 12px', fontSize: '13px' }}>Loading…</div>
           ) : servers.length === 0 ? (
-            <div style={{ color: '#876f86', padding: '8px 12px', fontSize: '14px' }}>
-              No servers yet
-            </div>
+            <div style={{ color: '#61475f', padding: '8px 12px', fontSize: '13px' }}>No servers yet</div>
           ) : (
             servers.map((server) => (
               <Link
@@ -125,25 +125,23 @@ export default function Sidebar() {
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '10px',
-                  padding: '10px 12px',
+                  gap: '8px',
+                  padding: '8px 10px',
                   borderRadius: '8px',
                   textDecoration: 'none',
-                  color: 'white',
-                  background: activeId === server.id ? '#fd87f620' : 'transparent',
-                  border: activeId === server.id ? '1px solid #fd87f640' : '1px solid transparent',
-                  marginBottom: '4px',
-                  transition: 'background 0.15s',
-                  fontSize: '15px',
+                  color: activeId === server.id ? 'white' : '#d4b8d4',
+                  background: activeId === server.id ? '#fd87f618' : 'transparent',
+                  border: activeId === server.id ? '1px solid #fd87f630' : '1px solid transparent',
+                  marginBottom: '2px',
+                  fontSize: '14px',
                 }}
               >
-                {/* Status dot */}
                 <div
                   style={{
-                    width: '8px',
-                    height: '8px',
+                    width: '7px',
+                    height: '7px',
                     borderRadius: '50%',
-                    background: server.status === 'running' ? '#22c55e' : '#6b7280',
+                    background: server.status === 'running' ? '#22c55e' : '#61475f',
                     flexShrink: 0,
                   }}
                 />
@@ -155,16 +153,40 @@ export default function Sidebar() {
           )}
         </nav>
 
-        {/* Logout button */}
-        <div style={{ padding: '16px 12px' }}>
+        {/* Root Terminal (only for root/sudo users) */}
+        {username === 'root' && (
+          <div style={{ padding: '8px 10px' }}>
+            <Link
+              href="/terminal"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '8px 10px',
+                borderRadius: '8px',
+                textDecoration: 'none',
+                color: onTerminal ? 'white' : '#876f86',
+                background: onTerminal ? '#fd87f618' : 'transparent',
+                border: onTerminal ? '1px solid #fd87f630' : '1px solid transparent',
+                fontSize: '13px',
+              }}
+            >
+              <span>⌨</span>
+              Root Terminal
+            </Link>
+          </div>
+        )}
+
+        {/* Logout */}
+        <div style={{ padding: '8px 10px 16px' }}>
           <button
             onClick={handleLogout}
             style={{
               background: 'transparent',
-              border: '1px solid #876f86',
-              color: '#876f86',
+              border: '1px solid #3d1f3b',
+              color: '#61475f',
               borderRadius: '8px',
-              padding: '8px 16px',
+              padding: '7px 14px',
               width: '100%',
               cursor: 'pointer',
               fontSize: '13px',

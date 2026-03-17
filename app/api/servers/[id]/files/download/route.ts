@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient, getSFTP, execCommand } from '@/lib/ssh'
+import { SERVERS_DIR } from '@/lib/servers'
 
 export async function GET(
   request: NextRequest,
@@ -17,7 +18,7 @@ export async function GET(
     return NextResponse.json({ error: 'Missing paths' }, { status: 400 })
   }
 
-  const paths = pathsParam.split(',').filter((p) => p.startsWith('/servers/'))
+  const paths = pathsParam.split(',').filter((p) => p.startsWith(SERVERS_DIR + '/'))
 
   if (!paths.length) {
     return NextResponse.json({ error: 'No valid paths' }, { status: 400 })
@@ -27,10 +28,8 @@ export async function GET(
     const client = await getSSHClient(session.host, session.username, session.password)
 
     if (paths.length === 1) {
-      // Single file: stream via SFTP
       const sftp = await getSFTP(client)
       const filePath = paths[0]
-
       const readStream = sftp.createReadStream(filePath)
       const fileName = filePath.split('/').pop() || 'download'
 
@@ -58,7 +57,6 @@ export async function GET(
         },
       })
     } else {
-      // Multiple files: tar on remote and stream
       const tarPath = `/tmp/craft-${id}-download-${Date.now()}.tar.gz`
       const fileList = paths.map((p) => `"${p}"`).join(' ')
 
@@ -74,7 +72,6 @@ export async function GET(
           })
           readStream.on('end', () => {
             controller.close()
-            // Clean up temp file
             execCommand(client, `rm -f ${tarPath}`).catch(() => {})
           })
           readStream.on('error', (err: Error) => {

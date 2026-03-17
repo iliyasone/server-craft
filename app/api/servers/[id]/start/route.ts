@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient } from '@/lib/ssh'
-import { startServer } from '@/lib/servers'
+import { getStartCommand } from '@/lib/servers'
+import { getOrCreateTerminalSession, writeToTerminal } from '@/lib/terminal-sessions'
 
 export async function POST(
   _request: NextRequest,
@@ -14,7 +15,12 @@ export async function POST(
 
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
-    await startServer(client, id)
+    const cmd = await getStartCommand(client, id)
+
+    // Ensure terminal session is open and send the start command through it
+    await getOrCreateTerminalSession(id, client)
+    writeToTerminal(id, cmd + '\r')
+
     return NextResponse.json({ ok: true })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to start server'

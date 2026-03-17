@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-const PROTECTED_PREFIXES = ['/dashboard', '/servers']
+const PROTECTED_PREFIXES = ['/dashboard', '/servers', '/terminal']
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   const isProtected = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p))
@@ -19,5 +19,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/servers/:path*'],
+  matcher: ['/dashboard/:path*', '/servers/:path*', '/terminal/:path*'],
 }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient, getSFTP, sftpReaddir, execCommand } from '@/lib/ssh'
+import { SERVERS_DIR } from '@/lib/servers'
 
 export interface FileEntry {
   name: string
@@ -19,7 +20,7 @@ export async function GET(
 
   const { id } = await params
   const searchParams = request.nextUrl.searchParams
-  const dirPath = searchParams.get('path') || `/servers/${id}`
+  const dirPath = searchParams.get('path') || `${SERVERS_DIR}/${id}`
 
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
@@ -56,7 +57,7 @@ export async function DELETE(
   const session = await getSession()
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  await params // ensure params are resolved
+  await params
 
   try {
     const { paths } = await request.json()
@@ -67,7 +68,7 @@ export async function DELETE(
     const client = await getSSHClient(session.host, session.username, session.password)
 
     for (const p of paths) {
-      if (typeof p === 'string' && p.startsWith('/servers/')) {
+      if (typeof p === 'string' && p.startsWith(SERVERS_DIR + '/')) {
         await execCommand(client, `rm -rf "${p}"`)
       }
     }
@@ -79,3 +80,32 @@ export async function DELETE(
   }
 }
 
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession()
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  await params
+
+  try {
+    const { from, to } = await request.json()
+    if (!from || !to || typeof from !== 'string' || typeof to !== 'string') {
+      return NextResponse.json({ error: 'Invalid paths' }, { status: 400 })
+    }
+
+    // Security: must stay within SERVERS_DIR
+    if (!from.startsWith(SERVERS_DIR + '/') || !to.startsWith(SERVERS_DIR + '/')) {
+      return NextResponse.json({ error: 'Path outside allowed directory' }, { status: 400 })
+    }
+
+    const client = await getSSHClient(session.host, session.username, session.password)
+    await execCommand(client, `mv "${from}" "${to}"`)
+
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to move/rename'
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}

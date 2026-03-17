@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import FileExplorer from '@/components/FileExplorer'
-import ServerStats from '@/components/ServerStats'
 import NotionTimer from '@/components/NotionTimer'
 import NewServerModal from '@/components/NewServerModal'
 
@@ -20,7 +19,7 @@ const ServerTerminal = dynamic(() => import('@/components/ServerTerminal'), {
         color: '#876f86',
       }}
     >
-      Loading terminal...
+      Loading terminal…
     </div>
   ),
 })
@@ -33,6 +32,7 @@ interface NotionStatusData {
   streak: number
   canStart: boolean
   isLimited: boolean
+  entries?: Array<{ date: string; checked: boolean; notes?: string }>
 }
 
 interface ServerPageClientProps {
@@ -44,7 +44,6 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   const [status, setStatus] = useState<'running' | 'stopped'>('stopped')
   const [uptime, setUptime] = useState<string | null>(null)
   const [notionStatus, setNotionStatus] = useState<NotionStatusData | null>(null)
-  const [isLimited, setIsLimited] = useState(false)
   const [showNewServer, setShowNewServer] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
 
@@ -64,10 +63,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
       const res = await fetch(`/api/notion/status?ip=${encodeURIComponent(host)}`)
       if (res.ok) {
         const data = await res.json()
-        if (data.status) {
-          setNotionStatus(data.status)
-          setIsLimited(data.status.isLimited)
-        }
+        if (data.status) setNotionStatus(data.status)
       }
     } catch {}
   }, [host])
@@ -83,11 +79,15 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
     }
   }, [fetchStatus, fetchNotionStatus])
 
+  // canStart: if notion is configured and user is limited, check canStart flag
+  const notionBlocked = notionStatus !== null && notionStatus.isLimited && !notionStatus.canStart
+
   async function handleStart() {
+    if (notionBlocked) return
     setActionLoading(true)
     try {
       await fetch(`/api/servers/${id}/start`, { method: 'POST' })
-      await fetchStatus()
+      setTimeout(fetchStatus, 1500)
     } finally {
       setActionLoading(false)
     }
@@ -120,34 +120,32 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
         style={{
           background: '#300a2e',
           borderBottom: '1px solid #fd87f6',
-          padding: '12px 24px',
+          padding: '10px 20px',
           display: 'flex',
           alignItems: 'center',
-          gap: '16px',
+          gap: '12px',
           flexShrink: 0,
         }}
       >
-        <h1 className="font-title" style={{ fontSize: '28px', margin: 0 }}>
-          {id}
-        </h1>
+        <span style={{ fontSize: '18px', fontWeight: '700' }}>{id}</span>
 
         {/* Status badge */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '6px',
-            background: isRunning ? '#14532d55' : '#3f3f4655',
+            gap: '5px',
+            background: isRunning ? '#14532d40' : '#3f3f4640',
             border: `1px solid ${isRunning ? '#22c55e' : '#6b7280'}`,
             borderRadius: '20px',
-            padding: '4px 12px',
-            fontSize: '13px',
+            padding: '3px 10px',
+            fontSize: '12px',
           }}
         >
           <div
             style={{
-              width: '8px',
-              height: '8px',
+              width: '7px',
+              height: '7px',
               borderRadius: '50%',
               background: isRunning ? '#22c55e' : '#6b7280',
             }}
@@ -156,69 +154,70 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
         </div>
 
         {uptime && isRunning && (
-          <span style={{ color: '#876f86', fontSize: '13px' }}>up {uptime}</span>
+          <span style={{ color: '#876f86', fontSize: '12px' }}>up {uptime}</span>
         )}
 
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
           <button
             onClick={() => setShowNewServer(true)}
             style={{
               background: 'transparent',
               border: '1px solid #fd87f6',
               color: '#fd87f6',
-              padding: '6px 16px',
+              padding: '5px 14px',
               borderRadius: '8px',
               cursor: 'pointer',
               fontSize: '13px',
             }}
           >
-            + New Server
+            + New
           </button>
 
           {isRunning ? (
             <button
               onClick={handleStop}
               disabled={actionLoading}
+              title="Send Ctrl+C to terminal"
               style={{
                 background: '#dc2626',
                 color: 'white',
                 border: 'none',
-                padding: '8px 20px',
+                padding: '7px 18px',
                 borderRadius: '8px',
                 cursor: actionLoading ? 'not-allowed' : 'pointer',
                 fontWeight: '700',
+                fontSize: '14px',
                 opacity: actionLoading ? 0.7 : 1,
               }}
             >
-              {actionLoading ? '...' : 'Stop'}
+              {actionLoading ? '…' : 'Stop'}
             </button>
           ) : (
             <button
               onClick={handleStart}
-              disabled={actionLoading}
+              disabled={actionLoading || notionBlocked}
+              title={notionBlocked ? 'Blocked: no recent workout logged' : 'Start server'}
               style={{
-                background: '#22c55e',
+                background: notionBlocked ? '#374151' : '#22c55e',
                 color: 'white',
                 border: 'none',
-                padding: '8px 20px',
+                padding: '7px 18px',
                 borderRadius: '8px',
-                cursor: actionLoading ? 'not-allowed' : 'pointer',
+                cursor: actionLoading || notionBlocked ? 'not-allowed' : 'pointer',
                 fontWeight: '700',
+                fontSize: '14px',
                 opacity: actionLoading ? 0.7 : 1,
               }}
             >
-              {actionLoading ? '...' : 'Start'}
+              {actionLoading ? '…' : notionBlocked ? '🔒 Start' : 'Start'}
             </button>
           )}
         </div>
       </div>
 
-      {/* Notion Timer (if limited) */}
-      {isLimited && notionStatus && (
-        <NotionTimer
-          notionStatus={notionStatus}
-          onRefresh={fetchNotionStatus}
-        />
+      {/* Notion Timer — always visible if data available */}
+      {notionStatus && (
+        <NotionTimer notionStatus={notionStatus} onRefresh={fetchNotionStatus} />
       )}
 
       {/* Main content: Terminal + File Explorer */}
@@ -228,7 +227,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
           <ServerTerminal serverId={id} />
         </div>
 
-        {/* Right panel (40%) */}
+        {/* File Explorer (40%) */}
         <div
           style={{
             flex: '0 0 40%',
@@ -238,17 +237,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
             overflow: 'hidden',
           }}
         >
-          <ServerStats
-            serverId={id}
-            status={status}
-            uptime={uptime}
-            onStart={handleStart}
-            onStop={handleStop}
-            actionLoading={actionLoading}
-          />
-          <div style={{ flex: 1, overflow: 'hidden' }}>
-            <FileExplorer serverId={id} />
-          </div>
+          <FileExplorer serverId={id} />
         </div>
       </div>
 

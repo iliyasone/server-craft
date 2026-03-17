@@ -1,7 +1,7 @@
 import { Client } from 'ssh2'
 import { execCommand } from './ssh'
 
-const SERVERS_DIR = '/servers'
+export const SERVERS_DIR = '/home/server-craft'
 
 export interface Server {
   id: string
@@ -11,98 +11,88 @@ export interface Server {
 }
 
 export async function listServers(client: Client): Promise<Server[]> {
-  await execCommand(client, `mkdir -p ${SERVERS_DIR}`)
-
-  const { stdout } = await execCommand(
-    client,
-    `ls -la ${SERVERS_DIR} | grep "^d" | awk '{print $9}' | grep -v "^\\.\\.\\?$"`
+  // Single SSH command: list dirs and check status for each
+  const { stdout } = await execCommand(client,
+    `mkdir -p ${SERVERS_DIR} 2>/dev/null; ` +
+    `for dir in ${SERVERS_DIR}/*/; do ` +
+      `[ -d "$dir" ] || continue; ` +
+      `name=$(basename "$dir"); ` +
+      `status="stopped"; ` +
+      `if command -v tmux >/dev/null 2>&1; then ` +
+        `if tmux has-session -t "craft-$name" 2>/dev/null; then ` +
+          `cmd=$(tmux list-panes -t "craft-$name" -F "#{pane_current_command}" 2>/dev/null); ` +
+          `case "$cmd" in bash|sh|zsh|fish|dash|tmux|"") ;; *) status="running" ;; esac; ` +
+        `fi; ` +
+      `else ` +
+        `pgrep -f "java.*${SERVERS_DIR}/$name" >/dev/null 2>&1 && status="running"; ` +
+      `fi; ` +
+      `echo "$name:$status"; ` +
+    `done`
   )
 
-  const names = stdout
+  return stdout
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l.length > 0 && l !== '.' && l !== '..')
-
-  const servers: Server[] = []
-
-  for (const name of names) {
-    const status = await getServerStatus(client, name)
-    servers.push({
-      id: name,
-      name,
-      path: `${SERVERS_DIR}/${name}`,
-      status,
+    .filter((l) => l.includes(':'))
+    .map((line) => {
+      const [name, status] = line.split(':')
+      return {
+        id: name,
+        name,
+        path: `${SERVERS_DIR}/${name}`,
+        status: (status === 'running' ? 'running' : 'stopped') as 'running' | 'stopped',
+      }
     })
-  }
-
-  return servers
 }
 
 export async function getServerStatus(
   client: Client,
   name: string
 ): Promise<'running' | 'stopped'> {
-  const { stdout } = await execCommand(
-    client,
-    `tmux has-session -t craft-${name} 2>/dev/null && echo running || echo stopped`
+  // Single SSH command checks tmux availability, session, and pane command
+  const { stdout } = await execCommand(client,
+    `if command -v tmux >/dev/null 2>&1; then ` +
+      `if tmux has-session -t craft-${name} 2>/dev/null; then ` +
+        `cmd=$(tmux list-panes -t craft-${name} -F "#{pane_current_command}" 2>/dev/null); ` +
+        `case "$cmd" in bash|sh|zsh|fish|dash|tmux|"") echo stopped ;; *) echo running ;; esac; ` +
+      `else echo stopped; fi; ` +
+    `else ` +
+      `pgrep -f "java.*${SERVERS_DIR}/${name}" >/dev/null 2>&1 && echo running || echo stopped; ` +
+    `fi`
   )
   return stdout.trim() === 'running' ? 'running' : 'stopped'
 }
 
-export async function startServer(client: Client, name: string): Promise<void> {
-  // Create session if not exists
-  await execCommand(
-    client,
-    `tmux has-session -t craft-${name} 2>/dev/null || tmux new-session -d -s craft-${name} -c ${SERVERS_DIR}/${name}`
-  )
-
-  // Set up log capture
-  await execCommand(
-    client,
-    `tmux pipe-pane -o -t craft-${name} 'cat >> /tmp/craft-${name}.log'`
-  )
-
-  // Run start script if it exists, otherwise try to find a jar
+export async function getStartCommand(client: Client, name: string): Promise<string> {
   const { stdout: startSh } = await execCommand(
     client,
     `test -f ${SERVERS_DIR}/${name}/start.sh && echo exists || echo missing`
   )
 
   if (startSh.trim() === 'exists') {
-    await execCommand(
-      client,
-      `tmux send-keys -t craft-${name} 'bash ${SERVERS_DIR}/${name}/start.sh' Enter`
-    )
-  } else {
-    // Try to find a jar
-    const { stdout: jarList } = await execCommand(
-      client,
-      `ls ${SERVERS_DIR}/${name}/*.jar 2>/dev/null | head -1`
-    )
-    const jar = jarList.trim()
-    if (jar) {
-      await execCommand(
-        client,
-        `tmux send-keys -t craft-${name} 'cd ${SERVERS_DIR}/${name} && java -Xmx2G -jar ${jar} nogui' Enter`
-      )
-    }
+    return `bash ${SERVERS_DIR}/${name}/start.sh`
   }
-}
 
-export async function stopServer(client: Client, name: string): Promise<void> {
-  await execCommand(client, `tmux send-keys -t craft-${name} 'stop' Enter`)
+  const { stdout: jarList } = await execCommand(
+    client,
+    `ls ${SERVERS_DIR}/${name}/*.jar 2>/dev/null | head -1`
+  )
+  const jar = jarList.trim()
+  if (jar) {
+    return `cd ${SERVERS_DIR}/${name} && java -Xmx2G -jar "${jar}" nogui`
+  }
+
+  return `echo "No start.sh or jar found in ${SERVERS_DIR}/${name}"`
 }
 
 export async function createServer(client: Client, name: string): Promise<void> {
   await execCommand(client, `mkdir -p ${SERVERS_DIR}/${name}`)
 
-  // Create eula.txt
   await execCommand(
     client,
     `echo "eula=true" > ${SERVERS_DIR}/${name}/eula.txt`
   )
 
-  // Create start.sh template
   const startScript = `#!/bin/bash
 cd ${SERVERS_DIR}/${name}
 JAR=$(ls *.jar 2>/dev/null | head -1)

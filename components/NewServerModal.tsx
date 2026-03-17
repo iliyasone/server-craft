@@ -2,10 +2,38 @@
 
 import { useState, useRef, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
+import { SERVERS_DIR_CLIENT } from '@/lib/client-constants'
 
 interface NewServerModalProps {
   onClose: () => void
   onCreated?: () => void
+}
+
+function extractNameFromJar(filename: string): string {
+  const base = filename
+    .replace(/\.jar$/i, '')
+    .replace(/[-_](installer|universal|server|latest|snapshot|setup)$/i, '')
+
+  const parts = base.split('-')
+  const result: string[] = []
+  let versionFound = false
+
+  for (const part of parts) {
+    if (/^\d/.test(part)) {
+      if (versionFound) break
+      versionFound = true
+    }
+    result.push(part)
+  }
+
+  return result
+    .join('-')
+    .replace(/\./g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase()
+    .slice(0, 40)
 }
 
 export default function NewServerModal({ onClose, onCreated }: NewServerModalProps) {
@@ -17,6 +45,14 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
   const [progress, setProgress] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  function handleJarSelect(file: File) {
+    setJarFile(file)
+    if (!name.trim()) {
+      const suggested = extractNameFromJar(file.name)
+      if (suggested) setName(suggested)
+    }
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (!name.trim()) {
@@ -26,10 +62,9 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
 
     setStep('creating')
     setError('')
-    setProgress('Creating server directory...')
+    setProgress('Creating server directory…')
 
     try {
-      // Step 1: Create server
       const createRes = await fetch('/api/servers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -43,13 +78,12 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
 
       const serverId = createData.id
 
-      // Step 2: Upload JAR if provided
       if (jarFile) {
         setStep('uploading')
-        setProgress(`Uploading ${jarFile.name}...`)
+        setProgress(`Uploading ${jarFile.name}…`)
 
         const formData = new FormData()
-        formData.append('path', `/servers/${serverId}`)
+        formData.append('path', `${SERVERS_DIR_CLIENT}/${serverId}`)
         formData.append('files', jarFile)
 
         const uploadRes = await fetch(`/api/servers/${serverId}/files/upload`, {
@@ -65,14 +99,12 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
 
       setStep('done')
       setProgress('Server created successfully!')
-
       if (onCreated) onCreated()
 
-      // Redirect to new server
       setTimeout(() => {
         router.push(`/servers/${serverId}`)
         onClose()
-      }, 1000)
+      }, 800)
     } catch (err) {
       setStep('error')
       setError(err instanceof Error ? err.message : 'An error occurred')
@@ -86,7 +118,7 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
       style={{
         position: 'fixed',
         inset: 0,
-        background: '#00000080',
+        background: '#00000088',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -102,35 +134,67 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
           border: '1px solid #fd87f6',
           borderRadius: '24px',
           padding: '40px',
-          width: '400px',
+          width: '420px',
           color: 'white',
         }}
       >
-        <h2 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '8px' }}>
+        <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '4px' }}>
           New Server
         </h2>
         <p style={{ color: '#876f86', marginBottom: '24px', fontSize: '14px' }}>
-          Create a new Minecraft server on your remote host
+          Create a Minecraft server on your remote host
         </p>
 
         {step === 'done' ? (
           <div style={{ textAlign: 'center', padding: '16px 0' }}>
             <div style={{ fontSize: '48px', marginBottom: '12px' }}>✅</div>
             <p style={{ color: '#22c55e', fontWeight: '700' }}>{progress}</p>
-            <p style={{ color: '#876f86', fontSize: '13px', marginTop: '8px' }}>Redirecting to server...</p>
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
-            {/* Server name */}
+            {/* JAR file first — auto-fills name */}
             <div style={{ marginBottom: '20px' }}>
               <label
+                style={{ color: '#fd87f6', fontWeight: '600', fontSize: '13px', display: 'block', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}
+              >
+                Server JAR
+              </label>
+              <div
+                onClick={() => fileInputRef.current?.click()}
                 style={{
-                  color: '#fd87f6',
-                  fontWeight: '700',
-                  fontSize: '16px',
-                  display: 'block',
-                  marginBottom: '8px',
+                  background: '#3d1f3b',
+                  border: jarFile ? '1px solid #22c55e80' : '1px dashed #61475f',
+                  borderRadius: '10px',
+                  padding: '16px',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  color: jarFile ? '#22c55e' : '#876f86',
+                  transition: 'border-color 0.15s',
                 }}
+              >
+                {jarFile
+                  ? `✓ ${jarFile.name}`
+                  : 'Click to select a .jar file'}
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".jar"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files?.[0]) handleJarSelect(e.target.files[0])
+                }}
+              />
+              <p style={{ color: '#61475f', fontSize: '12px', marginTop: '4px' }}>
+                Server name will be auto-suggested from the filename
+              </p>
+            </div>
+
+            {/* Server name */}
+            <div style={{ marginBottom: '24px' }}>
+              <label
+                style={{ color: '#fd87f6', fontWeight: '600', fontSize: '13px', display: 'block', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}
               >
                 Server Name
               </label>
@@ -143,63 +207,21 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
                 pattern="[a-zA-Z0-9_-]+"
                 required
                 style={{
-                  background: '#61475f',
-                  border: '1px solid #000',
+                  background: '#3d1f3b',
+                  border: '1px solid #61475f',
                   borderRadius: '10px',
                   color: 'white',
-                  padding: '10px 14px',
-                  fontSize: '16px',
+                  padding: '11px 14px',
+                  fontSize: '15px',
                   width: '100%',
                   outline: 'none',
                 }}
               />
-              <p style={{ color: '#876f86', fontSize: '12px', marginTop: '4px' }}>
-                Letters, numbers, hyphens, underscores only
+              <p style={{ color: '#61475f', fontSize: '12px', marginTop: '4px' }}>
+                Letters, numbers, hyphens, underscores
               </p>
             </div>
 
-            {/* JAR file */}
-            <div style={{ marginBottom: '24px' }}>
-              <label
-                style={{
-                  color: '#fd87f6',
-                  fontWeight: '700',
-                  fontSize: '16px',
-                  display: 'block',
-                  marginBottom: '8px',
-                }}
-              >
-                Server JAR (optional)
-              </label>
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  background: '#61475f',
-                  border: '1px dashed #876f86',
-                  borderRadius: '10px',
-                  padding: '16px',
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  color: jarFile ? '#22c55e' : '#876f86',
-                }}
-              >
-                {jarFile ? `✅ ${jarFile.name}` : 'Click to select a .jar file'}
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".jar"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  if (e.target.files?.[0]) {
-                    setJarFile(e.target.files[0])
-                  }
-                }}
-              />
-            </div>
-
-            {/* Progress */}
             {isLoading && (
               <div
                 style={{
@@ -216,7 +238,6 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
               </div>
             )}
 
-            {/* Error */}
             {(error || step === 'error') && (
               <div
                 style={{
@@ -241,7 +262,7 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
                 style={{
                   flex: 1,
                   background: 'transparent',
-                  border: '1px solid #876f86',
+                  border: '1px solid #61475f',
                   color: '#876f86',
                   padding: '10px',
                   borderRadius: '8px',
@@ -266,7 +287,7 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
                   fontSize: '15px',
                 }}
               >
-                {isLoading ? (step === 'uploading' ? 'Uploading...' : 'Creating...') : 'Create Server'}
+                {isLoading ? (step === 'uploading' ? 'Uploading…' : 'Creating…') : 'Create Server'}
               </button>
             </div>
           </form>
