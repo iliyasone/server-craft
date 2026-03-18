@@ -91,7 +91,21 @@ async function reconnectSSH(key: string): Promise<Client> {
   return client
 }
 
-function connectSSH(host: string, username: string, password: string): Promise<Client> {
+function isRetriableConnectError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return (
+    message.includes('Timed out while waiting for handshake') ||
+    message.includes('ECONNRESET') ||
+    message.includes('ETIMEDOUT') ||
+    message.includes('EHOSTUNREACH')
+  )
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function connectSSHOnce(host: string, username: string, password: string): Promise<Client> {
   return new Promise((resolve, reject) => {
     const client = new Client()
 
@@ -103,10 +117,28 @@ function connectSSH(host: string, username: string, password: string): Promise<C
       port: 22,
       username,
       password,
-      readyTimeout: 10000,
+      readyTimeout: 20000,
       keepaliveInterval: 30000,
     })
   })
+}
+
+async function connectSSH(host: string, username: string, password: string): Promise<Client> {
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await connectSSHOnce(host, username, password)
+    } catch (err) {
+      lastError = err
+      if (!isRetriableConnectError(err) || attempt === 1) {
+        throw err
+      }
+      await delay(1000 * (attempt + 1))
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('SSH connection failed')
 }
 
 function execCommandOnce(
