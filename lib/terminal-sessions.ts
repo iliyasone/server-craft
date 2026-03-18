@@ -45,7 +45,7 @@ export async function getOrCreateTerminalSession(
 
   // Create new shell session
   const session = await new Promise<TerminalSession>((resolve, reject) => {
-    client.shell({ term: 'xterm-256color', cols: 220, rows: 50 }, (err, stream) => {
+    client.shell({ term: 'xterm-256color', cols: 80, rows: 24 }, (err, stream) => {
       if (err) return reject(err)
 
       const newSession: TerminalSession = {
@@ -132,6 +132,18 @@ export function subscribeToTerminal(
   return () => {
     session.listeners.delete(cb)
   }
+}
+
+export function resizeTerminal(serverId: string, cols: number, rows: number): void {
+  const session = global.terminalSessions!.get(serverId)
+  if (!session || !isStreamAlive(session)) return
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stream = session.stream as any
+    if (typeof stream.setWindow === 'function') {
+      stream.setWindow(rows, cols, 0, 0)
+    }
+  } catch {}
 }
 
 export function getTerminalBuffer(serverId: string): string[] {

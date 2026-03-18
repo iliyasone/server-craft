@@ -44,6 +44,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   const [status, setStatus] = useState<'running' | 'stopped'>('stopped')
   const [uptime, setUptime] = useState<string | null>(null)
   const [notionStatus, setNotionStatus] = useState<NotionStatusData | null>(null)
+  const [notionError, setNotionError] = useState<string | null>(null)
   const [showNewServer, setShowNewServer] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
 
@@ -61,9 +62,14 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   const fetchNotionStatus = useCallback(async () => {
     try {
       const res = await fetch(`/api/notion/status?ip=${encodeURIComponent(host)}`)
+      const data = await res.json()
       if (res.ok) {
-        const data = await res.json()
-        if (data.status) setNotionStatus(data.status)
+        if (data.status) {
+          setNotionStatus(data.status)
+          setNotionError(null)
+        }
+      } else if (data.error) {
+        setNotionError(data.error)
       }
     } catch {}
   }, [host])
@@ -218,6 +224,39 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
       {/* Notion Timer — always visible if data available */}
       {notionStatus && (
         <NotionTimer notionStatus={notionStatus} onRefresh={fetchNotionStatus} />
+      )}
+
+      {notionError && !notionStatus && (
+        <div
+          style={{
+            background: '#f8717112',
+            borderBottom: '1px solid #f8717140',
+            padding: '8px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '13px',
+            color: '#f87171',
+            flexShrink: 0,
+          }}
+        >
+          <span>Notion: {notionError}</span>
+          <button
+            onClick={fetchNotionStatus}
+            style={{
+              marginLeft: 'auto',
+              background: 'transparent',
+              border: '1px solid #f8717140',
+              color: '#f87171',
+              padding: '3px 8px',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '11px',
+            }}
+          >
+            Retry
+          </button>
+        </div>
       )}
 
       {/* Main content: Terminal + File Explorer */}

@@ -88,9 +88,26 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
 
     init()
 
-    // Handle resize
+    // Handle resize — sync terminal size to server
+    const resizeUrl = terminalApiBase ? `${terminalApiBase}/resize` : `/api/servers/${serverId}/terminal/resize`
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null
+
     function handleResize() {
-      fitAddonRef.current?.fit()
+      if (!fitAddonRef.current || !xtermRef.current) return
+      fitAddonRef.current.fit()
+      const t = xtermRef.current
+      const cols = t.cols
+      const rows = t.rows
+      if (cols && rows) {
+        if (resizeTimer) clearTimeout(resizeTimer)
+        resizeTimer = setTimeout(() => {
+          fetch(resizeUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cols, rows }),
+          }).catch(() => {})
+        }, 150)
+      }
     }
     const resizeObserver = new ResizeObserver(handleResize)
     if (termRef.current) resizeObserver.observe(termRef.current)

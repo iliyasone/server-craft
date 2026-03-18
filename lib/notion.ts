@@ -32,18 +32,24 @@ interface NotionPage {
       }
       date?: { start: string } | null
       rich_text?: Array<{ plain_text?: string; text?: { content: string } }>
+      title?: Array<{
+        type: string
+        plain_text?: string
+        text?: { content: string }
+        mention?: { type: string; date?: { start: string } }
+      }>
     }
   >
 }
 
-function getShutdownDate(date: Date, shutdownTime: string): Date {
+export function getShutdownDate(date: Date, shutdownTime: string): Date {
   const [hours, minutes] = shutdownTime.split(':').map(Number)
   const d = new Date(date)
   d.setUTCHours(hours, minutes, 0, 0)
   return d
 }
 
-function isSameDay(a: Date, b: Date): boolean {
+export function isSameDay(a: Date, b: Date): boolean {
   return (
     a.getUTCFullYear() === b.getUTCFullYear() &&
     a.getUTCMonth() === b.getUTCMonth() &&
@@ -65,6 +71,145 @@ function extractRichText(props: NotionPage['properties']): string | undefined {
   return undefined
 }
 
+export interface RawEntry {
+  date: Date
+  checked: boolean
+  notes?: string
+  lastEdited?: string
+}
+
+export function parseNotionPages(pages: NotionPage[], boolColumn: string): RawEntry[] {
+  const entries: RawEntry[] = []
+
+  for (const page of pages) {
+    const dateField = page.properties['Дата тренировки']
+    const checkedField = page.properties[boolColumn]
+
+    let date: Date | null = null
+
+    // Prefer the title's date mention — it has the correct local date (e.g. "2026-03-18")
+    // The formula date is offset by timezone (e.g. 2026-03-17T21:00Z = 2026-03-18 Moscow)
+    const titleField = page.properties['Страница']
+    if (titleField?.title) {
+      for (const part of titleField.title) {
+        if (part.type === 'mention' && part.mention?.date?.start) {
+          date = new Date(part.mention.date.start + 'T12:00:00Z')
+          break
+        }
+      }
+    }
+
+    // Fallback to formula/date field
+    if (!date) {
+      if (dateField?.formula?.date?.start) {
+        date = new Date(dateField.formula.date.start)
+      } else if (dateField?.date?.start) {
+        date = new Date(dateField.date.start)
+      }
+    }
+    if (!date) continue
+
+    let checked = false
+    if (checkedField?.checkbox !== undefined) {
+      checked = checkedField.checkbox
+    } else if (checkedField?.formula?.boolean !== undefined) {
+      checked = checkedField.formula.boolean
+    }
+
+    entries.push({
+      date,
+      checked,
+      notes: extractRichText(page.properties),
+      lastEdited: page.last_edited_time,
+    })
+  }
+  return entries
+}
+
+export function computeNotionStatus(
+  rawEntries: RawEntry[],
+  isLimited: boolean,
+  shutdownTime: string,
+  now?: Date
+): NotionStatus {
+  const currentTime = now ?? new Date()
+  const today = new Date(currentTime)
+  const yesterday = new Date(currentTime)
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+
+  const todayEntry = rawEntries.find((e) => isSameDay(e.date, today))
+  const yesterdayEntry = rawEntries.find((e) => isSameDay(e.date, yesterday))
+
+  const checkedToday = todayEntry?.checked ?? false
+  const checkedYesterday = yesterdayEntry?.checked ?? false
+
+  // Calculate streak
+  let streak = 0
+  const sortedChecked = rawEntries
+    .filter((e) => e.checked)
+    .sort((a, b) => b.date.getTime() - a.date.getTime())
+
+  if (sortedChecked.length > 0) {
+    const startDate = checkedToday ? today : checkedYesterday ? yesterday : null
+    if (startDate) {
+      streak = 1
+      let prevDate = new Date(startDate)
+      for (let i = 1; i < sortedChecked.length; i++) {
+        const expected = new Date(prevDate)
+        expected.setUTCDate(expected.getUTCDate() - 1)
+        if (isSameDay(sortedChecked[i].date, expected)) {
+          streak++
+          prevDate = sortedChecked[i].date
+        } else if (!isSameDay(sortedChecked[i].date, prevDate)) {
+          break
+        }
+      }
+    }
+  }
+
+  // Calculate shutdown time
+  let shutdownAt: Date
+  const tomorrow = new Date(today)
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1)
+
+  if (checkedToday && !checkedYesterday) {
+    // Only today checked: 24h from last edit of today's entry
+    if (todayEntry?.lastEdited) {
+      shutdownAt = new Date(new Date(todayEntry.lastEdited).getTime() + 24 * 60 * 60 * 1000)
+    } else {
+      shutdownAt = getShutdownDate(tomorrow, shutdownTime)
+    }
+  } else if (checkedToday) {
+    // Today and yesterday checked: tomorrow at shutdown time
+    shutdownAt = getShutdownDate(tomorrow, shutdownTime)
+  } else {
+    // Not checked today: today at shutdown time
+    shutdownAt = getShutdownDate(today, shutdownTime)
+  }
+
+  const timeUntilShutdown = shutdownAt.getTime() - currentTime.getTime()
+  const canStart = checkedToday || checkedYesterday
+
+  // Build entries for calendar
+  const entries: NotionEntry[] = rawEntries.map((e) => ({
+    date: toDateKey(e.date),
+    checked: e.checked,
+    notes: e.notes,
+    lastEdited: e.lastEdited,
+  }))
+
+  return {
+    checkedToday,
+    checkedYesterday,
+    shutdownAt,
+    timeUntilShutdown,
+    streak,
+    canStart,
+    isLimited,
+    entries,
+  }
+}
+
 export async function getNotionStatus(serverIp: string): Promise<NotionStatus | null> {
   const token = process.env.NOTION_INTEGRATION_TOKEN
   const databaseId = process.env.NOTION_DATASOURCE_ID
@@ -80,144 +225,39 @@ export async function getNotionStatus(serverIp: string): Promise<NotionStatus | 
   const isLimited = limitedIps.includes(serverIp)
 
   try {
-    const response = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
+    const response = await fetch(`https://api.notion.com/v1/data_sources/${databaseId}/query`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
-        'Notion-Version': '2022-06-28',
+        'Notion-Version': '2026-03-11',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        sorts: [{ property: 'Дата тренировки', direction: 'descending' }],
-        page_size: 60,
-      }),
+      body: JSON.stringify({}),
       cache: 'no-store',
     })
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '')
       console.error(`Notion API error (${response.status}): ${errText}`)
-      return null
+      if (response.status === 404) {
+        throw new Error('Notion database not found. Share the database with your integration: open the database → "..." → "Connections" → add your integration.')
+      }
+      if (response.status === 401) {
+        throw new Error('Notion integration token is invalid or expired. Check NOTION_INTEGRATION_TOKEN in .env')
+      }
+      throw new Error(`Notion API error (${response.status})`)
     }
 
     const data = await response.json()
     const pages: NotionPage[] = data.results || []
 
-    const now = new Date()
-    const today = new Date(now)
-    const yesterday = new Date(now)
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1)
-
-    interface Entry {
-      date: Date
-      checked: boolean
-      notes?: string
-      lastEdited?: string
-    }
-
-    const rawEntries: Entry[] = []
-
-    for (const page of pages) {
-      const dateField = page.properties['Дата тренировки']
-      const checkedField = page.properties[boolColumn]
-
-      let date: Date | null = null
-
-      if (dateField?.formula?.date?.start) {
-        date = new Date(dateField.formula.date.start)
-      } else if (dateField?.date?.start) {
-        date = new Date(dateField.date.start)
-      }
-
-      if (!date) continue
-
-      let checked = false
-      if (checkedField?.checkbox !== undefined) {
-        checked = checkedField.checkbox
-      } else if (checkedField?.formula?.boolean !== undefined) {
-        checked = checkedField.formula.boolean
-      }
-
-      rawEntries.push({
-        date,
-        checked,
-        notes: extractRichText(page.properties),
-        lastEdited: page.last_edited_time,
-      })
-    }
-
-    const todayEntry = rawEntries.find((e) => isSameDay(e.date, today))
-    const yesterdayEntry = rawEntries.find((e) => isSameDay(e.date, yesterday))
-
-    const checkedToday = todayEntry?.checked ?? false
-    const checkedYesterday = yesterdayEntry?.checked ?? false
-
-    // Calculate streak
-    let streak = 0
-    const sortedChecked = rawEntries
-      .filter((e) => e.checked)
-      .sort((a, b) => b.date.getTime() - a.date.getTime())
-
-    if (sortedChecked.length > 0) {
-      const startDate = checkedToday ? today : checkedYesterday ? yesterday : null
-      if (startDate) {
-        streak = 1
-        let prevDate = new Date(startDate)
-        for (let i = 1; i < sortedChecked.length; i++) {
-          const expected = new Date(prevDate)
-          expected.setUTCDate(expected.getUTCDate() - 1)
-          if (isSameDay(sortedChecked[i].date, expected)) {
-            streak++
-            prevDate = sortedChecked[i].date
-          } else if (!isSameDay(sortedChecked[i].date, prevDate)) {
-            break
-          }
-        }
-      }
-    }
-
-    // Calculate shutdown time
-    let shutdownAt: Date
-    const tomorrow = new Date(today)
-    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1)
-
-    if (checkedToday && !checkedYesterday) {
-      // Only today checked: 24h from last edit of today's entry
-      if (todayEntry?.lastEdited) {
-        shutdownAt = new Date(new Date(todayEntry.lastEdited).getTime() + 24 * 60 * 60 * 1000)
-      } else {
-        shutdownAt = getShutdownDate(tomorrow, shutdownTime)
-      }
-    } else if (checkedToday) {
-      // Today and yesterday checked: tomorrow at shutdown time
-      shutdownAt = getShutdownDate(tomorrow, shutdownTime)
-    } else {
-      // Not checked today: today at shutdown time
-      shutdownAt = getShutdownDate(today, shutdownTime)
-    }
-
-    const timeUntilShutdown = shutdownAt.getTime() - now.getTime()
-    const canStart = checkedToday || checkedYesterday
-
-    // Build entries for calendar
-    const entries: NotionEntry[] = rawEntries.map((e) => ({
-      date: toDateKey(e.date),
-      checked: e.checked,
-      notes: e.notes,
-      lastEdited: e.lastEdited,
-    }))
-
-    return {
-      checkedToday,
-      checkedYesterday,
-      shutdownAt,
-      timeUntilShutdown,
-      streak,
-      canStart,
-      isLimited,
-      entries,
-    }
+    const rawEntries = parseNotionPages(pages, boolColumn)
+    return computeNotionStatus(rawEntries, isLimited, shutdownTime)
   } catch (err) {
+    // Re-throw user-facing errors (404, 401, etc.)
+    if (err instanceof Error && (err.message.includes('Notion') || err.message.includes('integration'))) {
+      throw err
+    }
     console.error('Notion fetch error:', err)
     return null
   }
