@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
-import { getSSHClient, execCommand } from '@/lib/ssh'
-import { SERVERS_DIR } from '@/lib/servers'
+import { getSSHClient } from '@/lib/ssh'
+import { getServerRuntimeInfo } from '@/lib/server-terminal'
 
 export async function GET(
   _request: NextRequest,
@@ -14,32 +14,10 @@ export async function GET(
 
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
-
-    // Single SSH command: get status + uptime
-    const { stdout } = await execCommand(client,
-      `status="stopped"; uptime=""; ` +
-      `if command -v tmux >/dev/null 2>&1; then ` +
-        `if tmux has-session -t craft-${id} 2>/dev/null; then ` +
-          `cmd=$(tmux list-panes -t craft-${id} -F "#{pane_current_command}" 2>/dev/null); ` +
-          `case "$cmd" in bash|sh|zsh|fish|dash|tmux|"") ;; *) status="running" ;; esac; ` +
-          `created=$(tmux display-message -t craft-${id} -p "#{session_created}" 2>/dev/null); ` +
-          `if [ -n "$created" ]; then ` +
-            `now=$(date +%s); elapsed=$((now - created)); ` +
-            `if [ $elapsed -lt 60 ]; then uptime="${'${elapsed}'}s"; ` +
-            `elif [ $elapsed -lt 3600 ]; then uptime="$((elapsed/60))m $((elapsed%60))s"; ` +
-            `else uptime="$((elapsed/3600))h $(((elapsed%3600)/60))m"; fi; ` +
-          `fi; ` +
-        `fi; ` +
-      `else ` +
-        `pgrep -f "java.*${SERVERS_DIR}/${id}" >/dev/null 2>&1 && status="running"; ` +
-      `fi; ` +
-      `echo "$status|$uptime"`
-    )
-
-    const [status, uptime] = stdout.trim().split('|')
+    const { status, uptime } = await getServerRuntimeInfo(client, id)
     return NextResponse.json({
-      status: status === 'running' ? 'running' : 'stopped',
-      uptime: uptime || null,
+      status,
+      uptime,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to get status'

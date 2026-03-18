@@ -86,7 +86,7 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       })
 
       // --- Output: SSE stream ---
-      sse = new EventSource(sseUrl)
+      sse = new EventSource(`${sseUrl}?cols=${terminal.cols}&rows=${terminal.rows}`)
       sse.onmessage = (event) => {
         if (disposed) return
         try {

@@ -50,7 +50,7 @@ interface ServerPageClientProps {
 }
 
 export default function ServerPageClient({ id, host }: ServerPageClientProps) {
-  const [status, setStatus] = useState<'running' | 'stopped'>('stopped')
+  const [status, setStatus] = useState<'running' | 'starting' | 'stopped'>('stopped')
   const [uptime, setUptime] = useState<string | null>(null)
   const [notionStatus, setNotionStatus] = useState<NotionStatusData | null>(null)
   const [notionError, setNotionError] = useState<string | null>(null)
@@ -63,7 +63,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
       const res = await fetch(`/api/servers/${id}/status`)
       if (res.ok) {
         const data = await res.json()
-        setStatus(data.status)
+        setStatus(data.status === 'running' || data.status === 'starting' ? data.status : 'stopped')
         setUptime(data.uptime)
       }
     } catch {}
@@ -110,9 +110,11 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   async function handleInstall() {
     setActionLoading(true)
     try {
-      await fetch(`/api/servers/${id}/install`, { method: 'POST' })
-      // Re-fetch info after install starts (it runs in terminal, takes time)
-      setTimeout(fetchServerInfo, 3000)
+      const res = await fetch(`/api/servers/${id}/install`, { method: 'POST' })
+      if (res.ok) {
+        // Re-fetch info after install starts (it runs in terminal, takes time)
+        setTimeout(fetchServerInfo, 3000)
+      }
     } finally {
       setActionLoading(false)
     }
@@ -122,8 +124,12 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
     if (notionBlocked) return
     setActionLoading(true)
     try {
-      await fetch(`/api/servers/${id}/start`, { method: 'POST' })
-      setTimeout(fetchStatus, 1500)
+      const res = await fetch(`/api/servers/${id}/start`, { method: 'POST' })
+      if (res.ok) {
+        setStatus('starting')
+        setUptime(null)
+        setTimeout(fetchStatus, 1500)
+      }
     } finally {
       setActionLoading(false)
     }
@@ -132,15 +138,22 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   async function handleStop() {
     setActionLoading(true)
     try {
-      await fetch(`/api/servers/${id}/stop`, { method: 'POST' })
-      setTimeout(fetchStatus, 2000)
+      const res = await fetch(`/api/servers/${id}/stop`, { method: 'POST' })
+      if (res.ok) {
+        setTimeout(fetchStatus, 2000)
+      }
     } finally {
       setActionLoading(false)
     }
   }
 
   const isRunning = status === 'running'
+  const isStarting = status === 'starting'
+  const isStarted = status !== 'stopped'
   const needsInstall = serverInfo?.needsInstall ?? false
+  const statusLabel = isRunning ? 'Running' : isStarting ? 'Starting' : 'Stopped'
+  const statusColor = isRunning ? '#22c55e' : isStarting ? '#f59e0b' : '#6b7280'
+  const statusBackground = isRunning ? '#14532d40' : isStarting ? '#78350f40' : '#3f3f4640'
 
   return (
     <div
@@ -192,8 +205,8 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
             display: 'flex',
             alignItems: 'center',
             gap: '5px',
-            background: isRunning ? '#14532d40' : '#3f3f4640',
-            border: `1px solid ${isRunning ? '#22c55e' : '#6b7280'}`,
+            background: statusBackground,
+            border: `1px solid ${statusColor}`,
             borderRadius: '20px',
             padding: '3px 10px',
             fontSize: '12px',
@@ -204,13 +217,13 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
               width: '7px',
               height: '7px',
               borderRadius: '50%',
-              background: isRunning ? '#22c55e' : '#6b7280',
+              background: statusColor,
             }}
           />
-          {isRunning ? 'Running' : 'Stopped'}
+          {statusLabel}
         </div>
 
-        {uptime && isRunning && (
+        {uptime && isStarted && (
           <span style={{ color: '#876f86', fontSize: '12px' }}>up {uptime}</span>
         )}
 
@@ -230,11 +243,11 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
             + New
           </button>
 
-          {isRunning ? (
+          {isStarted ? (
             <button
               onClick={handleStop}
               disabled={actionLoading}
-              title="Send Ctrl+C to terminal"
+              title="Send Ctrl+C to the remote tmux session"
               style={{
                 background: '#dc2626',
                 color: 'white',
@@ -295,7 +308,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
       </div>
 
       {/* Install info banner */}
-      {needsInstall && serverInfo?.installCommand && !isRunning && (
+      {needsInstall && serverInfo?.installCommand && !isStarted && (
         <div
           style={{
             background: '#7c3aed15',
@@ -326,7 +339,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
       )}
 
       {/* Start command preview */}
-      {serverInfo && !needsInstall && !isRunning && (
+      {serverInfo && !needsInstall && !isStarted && (
         <div
           style={{
             background: '#22c55e10',

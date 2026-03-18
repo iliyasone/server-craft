@@ -48,10 +48,14 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   const [error, setError] = useState<string | null>(null)
   const [uploadDragging, setUploadDragging] = useState(false) // files from desktop
   const [uploading, setUploading] = useState(false)
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [createFolderName, setCreateFolderName] = useState('')
+  const [creatingFolderLoading, setCreatingFolderLoading] = useState(false)
   // Rename state
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const createFolderInputRef = useRef<HTMLInputElement>(null)
   // Drag-to-move state
   const [draggedPath, setDraggedPath] = useState<string | null>(null)
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
@@ -87,6 +91,8 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     setSelected(new Set())
     setRenamingPath(null)
     setRenameValue('')
+    setCreatingFolder(false)
+    setCreateFolderName('')
     setError(null)
   }, [basePath])
 
@@ -109,6 +115,8 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   function navigateTo(path: string) {
     setCurrentPath(path)
     setRenamingPath(null)
+    setCreatingFolder(false)
+    setCreateFolderName('')
   }
 
   function navigateUp() {
@@ -186,6 +194,50 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     e.preventDefault()
     // Only show upload overlay when dragging from desktop (not internal)
     if (!draggedPath) setUploadDragging(true)
+  }
+
+  // ── Create folder ────────────────────────────────────────────────────────
+  function openCreateFolder() {
+    setCreatingFolder(true)
+    setCreateFolderName('')
+    setTimeout(() => {
+      createFolderInputRef.current?.focus()
+    }, 30)
+  }
+
+  function cancelCreateFolder() {
+    setCreatingFolder(false)
+    setCreateFolderName('')
+  }
+
+  async function submitCreateFolder() {
+    const folderName = createFolderName.trim()
+    if (!folderName) return cancelCreateFolder()
+
+    if (folderName === '.' || folderName === '..' || folderName.includes('/')) {
+      setError('Folder name cannot contain "/" and cannot be "." or ".."')
+      return
+    }
+
+    setCreatingFolderLoading(true)
+    try {
+      const res = await fetch(`/api/servers/${serverId}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: `${currentPath}/${folderName}` }),
+      })
+      if (res.ok) {
+        cancelCreateFolder()
+        fetchFiles(currentPath)
+      } else {
+        const data = await res.json()
+        setError(data.error || 'Create folder failed')
+      }
+    } catch {
+      setError('Create folder failed')
+    } finally {
+      setCreatingFolderLoading(false)
+    }
   }
 
   // ── Rename ───────────────────────────────────────────────────────────────
@@ -354,11 +406,82 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         <IconBtn title="Upload files" onClick={() => fileInputRef.current?.click()} loading={uploading}>
           {uploading ? '…' : '↑'}
         </IconBtn>
+        <IconBtn title="Create folder" onClick={openCreateFolder} loading={creatingFolderLoading}>
+          +
+        </IconBtn>
         {currentPath !== basePath && (
           <IconBtn title="Go up" onClick={navigateUp}>⬆</IconBtn>
         )}
         <IconBtn title="Refresh" onClick={() => fetchFiles(currentPath)}>↻</IconBtn>
       </div>
+
+      {creatingFolder && (
+        <div
+          style={{
+            padding: '8px 12px',
+            borderBottom: '1px solid #fd87f620',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: '#140714',
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ color: '#876f86', fontSize: '12px', whiteSpace: 'nowrap' }}>
+            New folder
+          </span>
+          <input
+            ref={createFolderInputRef}
+            value={createFolderName}
+            onChange={(e) => setCreateFolderName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submitCreateFolder()
+              if (e.key === 'Escape') cancelCreateFolder()
+            }}
+            placeholder="folder-name"
+            style={{
+              flex: 1,
+              background: '#3d1f3b',
+              border: '1px solid #61475f',
+              borderRadius: '6px',
+              color: 'white',
+              padding: '6px 10px',
+              fontSize: '13px',
+              outline: 'none',
+            }}
+          />
+          <button
+            onClick={submitCreateFolder}
+            disabled={creatingFolderLoading}
+            style={{
+              background: '#22c55e',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '6px 10px',
+              fontSize: '12px',
+              cursor: creatingFolderLoading ? 'not-allowed' : 'pointer',
+              opacity: creatingFolderLoading ? 0.7 : 1,
+            }}
+          >
+            {creatingFolderLoading ? '…' : 'Create'}
+          </button>
+          <button
+            onClick={cancelCreateFolder}
+            style={{
+              background: 'transparent',
+              color: '#876f86',
+              border: '1px solid #61475f50',
+              borderRadius: '6px',
+              padding: '6px 10px',
+              fontSize: '12px',
+              cursor: 'pointer',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Status messages */}
       {error && (
@@ -598,7 +721,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
       {/* Hint */}
       {!loading && files.length > 0 && (
         <div style={{ padding: '6px 12px', fontSize: '11px', color: '#3d1f3b', borderTop: '1px solid #ffffff08', flexShrink: 0 }}>
-          Double-click to rename · Drag files to a folder to move · Drop files from desktop to upload
+          Create folders from the toolbar · Double-click to rename · Drag files to a folder to move · Drop files from desktop to upload
         </div>
       )}
 

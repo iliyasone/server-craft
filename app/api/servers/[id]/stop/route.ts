@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
-import { writeToTerminal } from '@/lib/terminal-sessions'
+import { getSSHClient } from '@/lib/ssh'
+import { hasServerSession, sendServerTerminalInput } from '@/lib/server-terminal'
 
 export async function POST(
   _request: NextRequest,
@@ -12,8 +13,10 @@ export async function POST(
   const { id } = await params
 
   try {
-    // Send Ctrl+C to the terminal (kills whatever is running in tmux)
-    writeToTerminal(id, '\x03')
+    const client = await getSSHClient(session.host, session.username, session.password)
+    if (await hasServerSession(client, id)) {
+      await sendServerTerminalInput(client, id, '\x03', { ensureSession: false })
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

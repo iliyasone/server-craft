@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
-import { createSSHClient, getSSHClient } from '@/lib/ssh'
+import { getSSHClient } from '@/lib/ssh'
 import { getInstallCommand } from '@/lib/servers'
-import { getOrCreateTerminalSession, writeToTerminal } from '@/lib/terminal-sessions'
+import { sendServerTerminalInput } from '@/lib/server-terminal'
 
 export async function POST(
   _request: NextRequest,
@@ -21,12 +21,7 @@ export async function POST(
       return NextResponse.json({ error: 'No installation needed for this server' }, { status: 400 })
     }
 
-    await getOrCreateTerminalSession(
-      id,
-      () => createSSHClient(session.host, session.username, session.password)
-    )
-    // Ctrl+U clears line, then send install command
-    writeToTerminal(id, '\x15' + cmd + '\r')
+    await sendServerTerminalInput(client, id, '\x15' + cmd + '\r')
 
     return NextResponse.json({ ok: true, command: cmd })
   } catch (err) {

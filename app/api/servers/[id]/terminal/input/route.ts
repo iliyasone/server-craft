@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
-import { writeToTerminal } from '@/lib/terminal-sessions'
+import { getSSHClient } from '@/lib/ssh'
+import { sendServerTerminalInput } from '@/lib/server-terminal'
 
 export async function POST(
   request: NextRequest,
@@ -17,10 +18,8 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid data' }, { status: 400 })
     }
 
-    const ok = writeToTerminal(id, data)
-    if (!ok) {
-      return NextResponse.json({ error: 'Terminal session not found' }, { status: 404 })
-    }
+    const client = await getSSHClient(session.host, session.username, session.password)
+    await sendServerTerminalInput(client, id, data, { ensureSession: false })
 
     return NextResponse.json({ ok: true })
   } catch (err) {

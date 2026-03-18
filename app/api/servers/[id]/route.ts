@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient } from '@/lib/ssh'
-import { getServerStatus, getServerUptime } from '@/lib/servers'
+import { getServerRuntimeInfo } from '@/lib/server-terminal'
 
 export async function GET(
   _request: NextRequest,
@@ -14,8 +14,7 @@ export async function GET(
 
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
-    const status = await getServerStatus(client, id)
-    const uptime = await getServerUptime(client, id)
+    const { status, uptime } = await getServerRuntimeInfo(client, id)
 
     return NextResponse.json({
       id,
