@@ -1,5 +1,6 @@
 import { Client } from 'ssh2'
 import { SERVERS_DIR } from './servers'
+import { execCommand } from './ssh'
 
 interface TerminalSession {
   stream: NodeJS.ReadWriteStream
@@ -14,7 +15,32 @@ declare global {
 
 if (!global.terminalSessions) global.terminalSessions = new Map()
 
-const MAX_BUFFER = 5000
+const MAX_BUFFER = 20000
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`
+}
+
+function appendToBuffer(session: TerminalSession, text: string, insertAtStart = false) {
+  if (!text) return
+  if (insertAtStart) {
+    session.buffer.unshift(text)
+  } else {
+    session.buffer.push(text)
+  }
+  if (session.buffer.length > MAX_BUFFER) {
+    session.buffer.splice(0, session.buffer.length - MAX_BUFFER)
+  }
+}
+
+async function captureTmuxHistory(client: Client, serverId: string): Promise<string> {
+  const sessionName = `craft-${serverId}`
+  const { stdout } = await execCommand(
+    client,
+    `tmux capture-pane -p -S -10000 -t ${shellQuote(sessionName)} 2>/dev/null || true`
+  )
+  return stdout
+}
 
 function isStreamAlive(session: TerminalSession): boolean {
   try {
@@ -37,73 +63,79 @@ export async function getOrCreateTerminalSession(
     return existing
   }
 
-  // Clean up old session
   if (existing) {
     try { (existing.stream as NodeJS.WritableStream).end() } catch {}
     global.terminalSessions!.delete(serverId)
   }
 
-  // Create new shell session
   const session = await new Promise<TerminalSession>((resolve, reject) => {
-    client.shell({ term: 'xterm-256color', cols: 80, rows: 24 }, (err, stream) => {
-      if (err) return reject(err)
+    client.shell(
+      {
+        term: options?.rootShell ? 'xterm-256color' : 'screen-256color',
+        cols: 80,
+        rows: 24,
+      },
+      (err, stream) => {
+        if (err) return reject(err)
 
-      const newSession: TerminalSession = {
-        stream: stream as unknown as NodeJS.ReadWriteStream,
-        buffer: [],
-        listeners: new Set(),
-        createdAt: Date.now(),
-      }
-
-      stream.on('data', (data: Buffer) => {
-        const text = data.toString()
-        newSession.buffer.push(text)
-        if (newSession.buffer.length > MAX_BUFFER) {
-          newSession.buffer.splice(0, newSession.buffer.length - MAX_BUFFER)
+        const newSession: TerminalSession = {
+          stream: stream as unknown as NodeJS.ReadWriteStream,
+          buffer: [],
+          listeners: new Set(),
+          createdAt: Date.now(),
         }
-        for (const listener of newSession.listeners) {
-          try { listener(text) } catch {}
+
+        stream.on('data', (data: Buffer) => {
+          const text = data.toString()
+          appendToBuffer(newSession, text)
+          for (const listener of newSession.listeners) {
+            try { listener(text) } catch {}
+          }
+        })
+
+        stream.stderr?.on('data', (data: Buffer) => {
+          const text = data.toString()
+          appendToBuffer(newSession, text)
+          for (const listener of newSession.listeners) {
+            try { listener(text) } catch {}
+          }
+        })
+
+        stream.on('close', () => {
+          global.terminalSessions!.delete(serverId)
+        })
+
+        stream.on('error', () => {
+          global.terminalSessions!.delete(serverId)
+        })
+
+        if (options?.rootShell) {
+          resolve(newSession)
+          return
         }
-      })
 
-      stream.stderr?.on('data', (data: Buffer) => {
-        const text = data.toString()
-        newSession.buffer.push(text)
-        if (newSession.buffer.length > MAX_BUFFER) {
-          newSession.buffer.splice(0, newSession.buffer.length - MAX_BUFFER)
-        }
-        for (const listener of newSession.listeners) {
-          try { listener(text) } catch {}
-        }
-      })
-
-      stream.on('close', () => {
-        global.terminalSessions!.delete(serverId)
-      })
-
-      stream.on('error', () => {
-        global.terminalSessions!.delete(serverId)
-      })
-
-      resolve(newSession)
-
-      if (options?.rootShell) {
-        // Root terminal: plain shell, no tmux
-      } else {
-        // Ensure tmux session exists and attach to it
-        // Falls back to a plain shell in the server dir if tmux is unavailable
-        stream.write(
-          `mkdir -p ${SERVERS_DIR}/${serverId} 2>/dev/null; ` +
+        const serverDir = `${SERVERS_DIR}/${serverId}`
+        const sessionName = `craft-${serverId}`
+        const initCommand =
+          `mkdir -p ${shellQuote(serverDir)} 2>/dev/null; ` +
           `if command -v tmux >/dev/null 2>&1; then ` +
-            `tmux has-session -t craft-${serverId} 2>/dev/null || ` +
-            `tmux new-session -d -s craft-${serverId} -c ${SERVERS_DIR}/${serverId}; ` +
-            `tmux attach-session -t craft-${serverId}; ` +
+            `tmux has-session -t ${shellQuote(sessionName)} 2>/dev/null || ` +
+            `tmux new-session -d -s ${shellQuote(sessionName)} -c ${shellQuote(serverDir)}; ` +
+            `tmux set-option -t ${shellQuote(sessionName)} history-limit 50000 >/dev/null 2>&1 || true; ` +
+            `tmux attach-session -t ${shellQuote(sessionName)}; ` +
           `else ` +
-            `cd ${SERVERS_DIR}/${serverId}; ` +
+            `cd ${shellQuote(serverDir)}; ` +
           `fi\n`
-        )
+
+        stream.write(initCommand, async () => {
+          try {
+            const history = await captureTmuxHistory(client, serverId)
+            appendToBuffer(newSession, history, true)
+          } catch {}
+          resolve(newSession)
+        })
       }
-    })
+    )
   })
 
   global.terminalSessions!.set(serverId, session)

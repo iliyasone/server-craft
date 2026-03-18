@@ -119,6 +119,8 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
         height: '100vh',
         overflow: 'hidden',
         color: 'white',
+        minHeight: 0,
+        minWidth: 0,
       }}
     >
       {/* Top bar */}
@@ -260,9 +262,9 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
       )}
 
       {/* Main content: Terminal + File Explorer */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0 }}>
         {/* Terminal (60%) */}
-        <div style={{ flex: '0 0 60%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ flex: '0 0 60%', display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0, minWidth: 0 }}>
           <ServerTerminal serverId={id} />
         </div>
 
@@ -274,6 +276,8 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
+            minHeight: 0,
+            minWidth: 0,
           }}
         >
           <FileExplorer serverId={id} />

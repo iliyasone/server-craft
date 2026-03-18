@@ -7,6 +7,16 @@ interface ServerTerminalProps {
   terminalApiBase?: string // defaults to /api/servers/${serverId}/terminal
 }
 
+function normalizeWheelDelta(event: WheelEvent, rows: number): number {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return event.deltaY * rows
+  }
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+    return event.deltaY / 16
+  }
+  return event.deltaY
+}
+
 export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerminalProps) {
   const sseUrl = terminalApiBase ?? `/api/servers/${serverId}/terminal`
   const inputUrl = terminalApiBase ? `${terminalApiBase}/input` : `/api/servers/${serverId}/terminal/input`
@@ -15,6 +25,7 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
   const xtermRef = useRef<any>(null)
   const fitAddonRef = useRef<{ fit: () => void } | null>(null)
   const sseRef = useRef<EventSource | null>(null)
+  const wheelCarryRef = useRef(0)
 
   useEffect(() => {
     if (!termRef.current) return
@@ -35,10 +46,12 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
           cursor: '#fd87f6',
           selectionBackground: '#fd87f640',
         },
-        fontFamily: 'monospace',
+        fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
         fontSize: 13,
         cursorBlink: true,
-        scrollback: 10000,
+        scrollback: 50000,
+        scrollOnUserInput: false,
+        smoothScrollDuration: 0,
         allowProposedApi: true,
       })
 
@@ -58,6 +71,28 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       }
 
       xtermRef.current = terminal
+      wheelCarryRef.current = 0
+
+      // Keep mouse wheel for browser-side scrollback instead of passing it through
+      // to tmux, which makes server terminal history unreadable in the panel.
+      terminal.attachCustomWheelEventHandler((event: WheelEvent) => {
+        if (event.ctrlKey) return true
+
+        event.preventDefault()
+        event.stopPropagation()
+
+        wheelCarryRef.current += normalizeWheelDelta(event, terminal.rows || 24)
+        const wholeLines = wheelCarryRef.current > 0
+          ? Math.floor(wheelCarryRef.current)
+          : Math.ceil(wheelCarryRef.current)
+
+        if (wholeLines !== 0) {
+          terminal.scrollLines(wholeLines)
+          wheelCarryRef.current -= wholeLines
+        }
+
+        return false
+      })
 
       // Handle user input
       terminal.onData((data: string) => {
@@ -131,6 +166,8 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         background: '#0d0d0d',
         overflow: 'hidden',
         height: '100%',
+        minHeight: 0,
+        minWidth: 0,
       }}
     >
       <div
@@ -151,6 +188,8 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
           flex: 1,
           overflow: 'hidden',
           padding: '4px',
+          minHeight: 0,
+          minWidth: 0,
         }}
       />
     </div>
