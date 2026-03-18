@@ -43,22 +43,31 @@ export async function GET(_request: NextRequest) {
           send(controller, 'tmux', 'skip', 'tmux already installed')
         }
 
-        // Step 3: Check & install Java
-        send(controller, 'java', 'checking', 'Checking Java...')
-        const { stdout: javaCheck } = await execCommand(client, 'java -version 2>&1 | head -1')
-        if (javaCheck.includes('version') || javaCheck.includes('openjdk')) {
-          send(controller, 'java', 'skip', `Java found: ${javaCheck.trim()}`)
+        // Step 3: Check & install Java 17+ (required by modern Minecraft/Forge)
+        send(controller, 'java', 'checking', 'Checking Java 17+...')
+        const { stdout: javaVersionRaw } = await execCommand(client, 'java -version 2>&1 | head -1')
+        // Extract major version number (e.g. "17" from "openjdk version \"17.0.2\"" or "1.8.0_312")
+        const versionMatch = javaVersionRaw.match(/(?:version\s+\"?)(\d+)(?:\.(\d+))?/)
+        const javaMajor = versionMatch ? parseInt(versionMatch[1], 10) : 0
+        // Java 1.x style: "1.8" means Java 8. Java 9+: "9", "11", "17", etc.
+        const effectiveVersion = javaMajor === 1 && versionMatch?.[2] ? parseInt(versionMatch[2], 10) : javaMajor
+        const javaOk = effectiveVersion >= 17
+
+        if (javaOk) {
+          send(controller, 'java', 'skip', `Java ${effectiveVersion} found: ${javaVersionRaw.trim()}`)
         } else {
-          send(controller, 'java', 'installing', 'Installing Java (this may take a minute)...')
-          // Detect distro and install
+          const reason = javaMajor > 0
+            ? `Java ${effectiveVersion} is too old (need 17+), upgrading...`
+            : 'Installing Java 17...'
+          send(controller, 'java', 'installing', reason)
+
           const { stdout: distro } = await execCommand(client, 'cat /etc/os-release 2>/dev/null | head -5')
           let installCmd: string
-          if (distro.includes('debian') || distro.includes('ubuntu') || distro.includes('Ubuntu') || distro.includes('Debian')) {
-            installCmd = 'apt-get update -qq && apt-get install -y -qq default-jre-headless 2>&1 | tail -5'
-          } else if (distro.includes('alpine') || distro.includes('Alpine')) {
+          if (/debian|ubuntu/i.test(distro)) {
+            installCmd = 'apt-get update -qq && apt-get install -y -qq openjdk-17-jre-headless 2>&1 | tail -5'
+          } else if (/alpine/i.test(distro)) {
             installCmd = 'apk add --no-cache openjdk17-jre-headless 2>&1 | tail -5'
           } else {
-            // RHEL / CentOS / Fedora / generic
             installCmd = 'yum install -y java-17-openjdk-headless 2>&1 | tail -5 || dnf install -y java-17-openjdk-headless 2>&1 | tail -5'
           }
           const { stdout: installOut } = await execCommand(client, installCmd)
@@ -66,10 +75,14 @@ export async function GET(_request: NextRequest) {
 
           // Verify
           const { stdout: verifyJava } = await execCommand(client, 'java -version 2>&1 | head -1')
-          if (verifyJava.includes('version') || verifyJava.includes('openjdk')) {
-            send(controller, 'java', 'done', `Java installed: ${verifyJava.trim()}`)
+          const verifyMatch = verifyJava.match(/(?:version\s+\"?)(\d+)/)
+          const verifyMajor = verifyMatch ? parseInt(verifyMatch[1], 10) : 0
+          if (verifyMajor >= 17) {
+            send(controller, 'java', 'done', `Java 17 installed: ${verifyJava.trim()}`)
+          } else if (verifyJava.includes('version')) {
+            send(controller, 'java', 'done', `Warning: Java ${verifyMajor} installed but 17+ is required. Install manually: apt install openjdk-17-jre-headless`)
           } else {
-            send(controller, 'java', 'done', 'Java installation failed — server start requires Java')
+            send(controller, 'java', 'done', 'Java installation failed — server start requires Java 17+')
           }
         }
 

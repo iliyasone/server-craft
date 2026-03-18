@@ -3,6 +3,7 @@ import { SERVERS_DIR } from './servers'
 import { execCommand } from './ssh'
 
 interface TerminalSession {
+  client: Client
   stream: NodeJS.ReadWriteStream
   buffer: string[]
   listeners: Set<(data: string) => void>
@@ -15,7 +16,7 @@ declare global {
 
 if (!global.terminalSessions) global.terminalSessions = new Map()
 
-const MAX_BUFFER = 20000
+const MAX_BUFFER = 5000
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`
@@ -37,7 +38,7 @@ async function captureTmuxHistory(client: Client, serverId: string): Promise<str
   const sessionName = `craft-${serverId}`
   const { stdout } = await execCommand(
     client,
-    `tmux capture-pane -p -S -10000 -t ${shellQuote(sessionName)} 2>/dev/null || true`
+    `tmux capture-pane -p -S -2000 -t ${shellQuote(sessionName)} 2>/dev/null || true`
   )
   return stdout
 }
@@ -52,9 +53,15 @@ function isStreamAlive(session: TerminalSession): boolean {
   }
 }
 
+function disposeSession(serverId: string, session: TerminalSession) {
+  try { (session.stream as NodeJS.WritableStream).end() } catch {}
+  try { session.client.end() } catch {}
+  global.terminalSessions!.delete(serverId)
+}
+
 export async function getOrCreateTerminalSession(
   serverId: string,
-  client: Client,
+  createClient: () => Promise<Client>,
   options?: { rootShell?: boolean }
 ): Promise<TerminalSession> {
   const existing = global.terminalSessions!.get(serverId)
@@ -64,9 +71,10 @@ export async function getOrCreateTerminalSession(
   }
 
   if (existing) {
-    try { (existing.stream as NodeJS.WritableStream).end() } catch {}
-    global.terminalSessions!.delete(serverId)
+    disposeSession(serverId, existing)
   }
+
+  const client = await createClient()
 
   const session = await new Promise<TerminalSession>((resolve, reject) => {
     client.shell(
@@ -79,6 +87,7 @@ export async function getOrCreateTerminalSession(
         if (err) return reject(err)
 
         const newSession: TerminalSession = {
+          client,
           stream: stream as unknown as NodeJS.ReadWriteStream,
           buffer: [],
           listeners: new Set(),
@@ -102,11 +111,11 @@ export async function getOrCreateTerminalSession(
         })
 
         stream.on('close', () => {
-          global.terminalSessions!.delete(serverId)
+          disposeSession(serverId, newSession)
         })
 
         stream.on('error', () => {
-          global.terminalSessions!.delete(serverId)
+          disposeSession(serverId, newSession)
         })
 
         if (options?.rootShell) {

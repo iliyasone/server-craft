@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { createSSHClient, getSSHClient } from '@/lib/ssh'
-import { getStartCommand } from '@/lib/servers'
+import { getInstallCommand } from '@/lib/servers'
 import { getOrCreateTerminalSession, writeToTerminal } from '@/lib/terminal-sessions'
 
 export async function POST(
@@ -15,19 +15,22 @@ export async function POST(
 
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
-    const cmd = await getStartCommand(client, id)
+    const cmd = await getInstallCommand(client, id)
 
-    // Ensure terminal session is open and send the start command through it
+    if (!cmd) {
+      return NextResponse.json({ error: 'No installation needed for this server' }, { status: 400 })
+    }
+
     await getOrCreateTerminalSession(
       id,
       () => createSSHClient(session.host, session.username, session.password)
     )
-    // Ctrl+U clears any text already on the command line before sending the command
+    // Ctrl+U clears line, then send install command
     writeToTerminal(id, '\x15' + cmd + '\r')
 
-    return NextResponse.json({ ok: true })
+    return NextResponse.json({ ok: true, command: cmd })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to start server'
+    const message = err instanceof Error ? err.message : 'Failed to install server'
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }

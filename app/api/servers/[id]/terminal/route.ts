@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { getSession } from '@/lib/session'
-import { getSSHClient } from '@/lib/ssh'
+import { createSSHClient } from '@/lib/ssh'
 import {
   getOrCreateTerminalSession,
   subscribeToTerminal,
@@ -18,10 +18,11 @@ export async function GET(
 
   const { id } = await params
 
-  const client = await getSSHClient(session.host, session.username, session.password)
-
   // Ensure session exists
-  await getOrCreateTerminalSession(id, client)
+  await getOrCreateTerminalSession(
+    id,
+    () => createSSHClient(session.host, session.username, session.password)
+  )
 
   const encoder = new TextEncoder()
 

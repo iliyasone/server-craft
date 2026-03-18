@@ -1,8 +1,14 @@
 import { Client, SFTPWrapper } from 'ssh2'
 
+export interface SSHCredentials {
+  host: string
+  username: string
+  password: string
+}
+
 // Global pool (persists across requests in Node.js process)
 declare global {
-  var sshPool: Map<string, { client: Client; creds: { host: string; username: string; password: string }; lastUsed: number }> | undefined
+  var sshPool: Map<string, { client: Client; creds: SSHCredentials; lastUsed: number }> | undefined
   var sshExecQueues: Map<string, Promise<unknown>> | undefined
 }
 
@@ -50,6 +56,14 @@ export async function getSSHClient(
   client.on('error', () => { dropFromPool(key) })
 
   return client
+}
+
+export async function createSSHClient(
+  host: string,
+  username: string,
+  password: string
+): Promise<Client> {
+  return connectSSH(host, username, password)
 }
 
 // Force reconnect: drop current connection and create a new one

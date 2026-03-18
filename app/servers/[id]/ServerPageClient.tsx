@@ -35,6 +35,15 @@ interface NotionStatusData {
   entries?: Array<{ date: string; checked: boolean; notes?: string }>
 }
 
+interface ServerInfo {
+  type: 'forge' | 'vanilla' | 'unknown'
+  jar: string | null
+  hasRunSh: boolean
+  needsInstall: boolean
+  installCommand: string | null
+  startCommand: string
+}
+
 interface ServerPageClientProps {
   id: string
   host: string
@@ -47,6 +56,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   const [notionError, setNotionError] = useState<string | null>(null)
   const [showNewServer, setShowNewServer] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
+  const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null)
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -55,6 +65,15 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
         const data = await res.json()
         setStatus(data.status)
         setUptime(data.uptime)
+      }
+    } catch {}
+  }, [id])
+
+  const fetchServerInfo = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/servers/${id}/info`)
+      if (res.ok) {
+        setServerInfo(await res.json())
       }
     } catch {}
   }, [id])
@@ -76,6 +95,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
 
   useEffect(() => {
     fetchStatus()
+    fetchServerInfo()
     fetchNotionStatus()
     const statusInterval = setInterval(fetchStatus, 5000)
     const notionInterval = setInterval(fetchNotionStatus, 60000)
@@ -83,10 +103,20 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
       clearInterval(statusInterval)
       clearInterval(notionInterval)
     }
-  }, [fetchStatus, fetchNotionStatus])
+  }, [fetchStatus, fetchServerInfo, fetchNotionStatus])
 
-  // canStart: if notion is configured and user is limited, check canStart flag
   const notionBlocked = notionStatus !== null && notionStatus.isLimited && !notionStatus.canStart
+
+  async function handleInstall() {
+    setActionLoading(true)
+    try {
+      await fetch(`/api/servers/${id}/install`, { method: 'POST' })
+      // Re-fetch info after install starts (it runs in terminal, takes time)
+      setTimeout(fetchServerInfo, 3000)
+    } finally {
+      setActionLoading(false)
+    }
+  }
 
   async function handleStart() {
     if (notionBlocked) return
@@ -110,6 +140,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   }
 
   const isRunning = status === 'running'
+  const needsInstall = serverInfo?.needsInstall ?? false
 
   return (
     <div
@@ -136,6 +167,24 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
         }}
       >
         <span style={{ fontSize: '18px', fontWeight: '700' }}>{id}</span>
+
+        {/* Server type badge */}
+        {serverInfo && (
+          <span
+            style={{
+              fontSize: '11px',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              background: serverInfo.type === 'forge' ? '#7c3aed20' : '#06b6d420',
+              border: `1px solid ${serverInfo.type === 'forge' ? '#7c3aed' : '#06b6d4'}`,
+              color: serverInfo.type === 'forge' ? '#a78bfa' : '#67e8f9',
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+            }}
+          >
+            {serverInfo.type}
+          </span>
+        )}
 
         {/* Status badge */}
         <div
@@ -201,29 +250,113 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
               {actionLoading ? '…' : 'Stop'}
             </button>
           ) : (
-            <button
-              onClick={handleStart}
-              disabled={actionLoading || notionBlocked}
-              title={notionBlocked ? 'Blocked: no recent workout logged' : 'Start server'}
-              style={{
-                background: notionBlocked ? '#374151' : '#22c55e',
-                color: 'white',
-                border: 'none',
-                padding: '7px 18px',
-                borderRadius: '8px',
-                cursor: actionLoading || notionBlocked ? 'not-allowed' : 'pointer',
-                fontWeight: '700',
-                fontSize: '14px',
-                opacity: actionLoading ? 0.7 : 1,
-              }}
-            >
-              {actionLoading ? '…' : notionBlocked ? '🔒 Start' : 'Start'}
-            </button>
+            <>
+              {needsInstall && (
+                <button
+                  onClick={handleInstall}
+                  disabled={actionLoading}
+                  title={serverInfo?.installCommand ?? 'Install server'}
+                  style={{
+                    background: '#7c3aed',
+                    color: 'white',
+                    border: 'none',
+                    padding: '7px 18px',
+                    borderRadius: '8px',
+                    cursor: actionLoading ? 'not-allowed' : 'pointer',
+                    fontWeight: '700',
+                    fontSize: '14px',
+                    opacity: actionLoading ? 0.7 : 1,
+                  }}
+                >
+                  {actionLoading ? '…' : 'Install'}
+                </button>
+              )}
+              <button
+                onClick={handleStart}
+                disabled={actionLoading || notionBlocked}
+                title={notionBlocked ? 'Blocked: no recent workout logged' : (serverInfo?.startCommand ?? 'Start server')}
+                style={{
+                  background: notionBlocked ? '#374151' : '#22c55e',
+                  color: 'white',
+                  border: 'none',
+                  padding: '7px 18px',
+                  borderRadius: '8px',
+                  cursor: actionLoading || notionBlocked ? 'not-allowed' : 'pointer',
+                  fontWeight: '700',
+                  fontSize: '14px',
+                  opacity: actionLoading ? 0.7 : 1,
+                }}
+              >
+                {actionLoading ? '…' : notionBlocked ? '🔒 Start' : 'Start'}
+              </button>
+            </>
           )}
         </div>
       </div>
 
-      {/* Notion Timer — always visible if data available */}
+      {/* Install info banner */}
+      {needsInstall && serverInfo?.installCommand && !isRunning && (
+        <div
+          style={{
+            background: '#7c3aed15',
+            borderBottom: '1px solid #7c3aed40',
+            padding: '8px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            fontSize: '13px',
+            color: '#a78bfa',
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ fontWeight: 600 }}>Install needed:</span>
+          <code
+            style={{
+              background: '#0d0d0d',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              fontSize: '12px',
+              fontFamily: 'monospace',
+              color: '#e2e8f0',
+            }}
+          >
+            {serverInfo.installCommand}
+          </code>
+        </div>
+      )}
+
+      {/* Start command preview */}
+      {serverInfo && !needsInstall && !isRunning && (
+        <div
+          style={{
+            background: '#22c55e10',
+            borderBottom: '1px solid #22c55e30',
+            padding: '8px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            fontSize: '13px',
+            color: '#86efac',
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ fontWeight: 600 }}>Start command:</span>
+          <code
+            style={{
+              background: '#0d0d0d',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              fontSize: '12px',
+              fontFamily: 'monospace',
+              color: '#e2e8f0',
+            }}
+          >
+            {serverInfo.startCommand}
+          </code>
+        </div>
+      )}
+
+      {/* Notion Timer */}
       {notionStatus && (
         <NotionTimer notionStatus={notionStatus} onRefresh={fetchNotionStatus} />
       )}
@@ -265,7 +398,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0 }}>
         {/* Terminal (60%) */}
         <div style={{ flex: '0 0 60%', display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0, minWidth: 0 }}>
-          <ServerTerminal serverId={id} />
+          <ServerTerminal key={id} serverId={id} />
         </div>
 
         {/* File Explorer (40%) */}
@@ -280,7 +413,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
             minWidth: 0,
           }}
         >
-          <FileExplorer serverId={id} />
+          <FileExplorer key={id} serverId={id} />
         </div>
       </div>
 

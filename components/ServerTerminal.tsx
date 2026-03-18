@@ -4,40 +4,48 @@ import { useEffect, useRef } from 'react'
 
 interface ServerTerminalProps {
   serverId: string
-  terminalApiBase?: string // defaults to /api/servers/${serverId}/terminal
+  terminalApiBase?: string
 }
 
-function normalizeWheelDelta(event: WheelEvent, rows: number): number {
-  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
-    return event.deltaY * rows
-  }
-  if (event.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
-    return event.deltaY / 16
-  }
-  return event.deltaY
-}
+// Filter xterm.js terminal response sequences (DA responses, cursor reports, DCS)
+// that get emitted via onData when the remote side queries the terminal
+const TERMINAL_RESPONSE_RE = /\x1b\[[\?>]?[\d;]*c|\x1b\[\d+;\d+R|\x1bP[^\x1b]*\x1b\\/g
 
 export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerminalProps) {
   const sseUrl = terminalApiBase ?? `/api/servers/${serverId}/terminal`
   const inputUrl = terminalApiBase ? `${terminalApiBase}/input` : `/api/servers/${serverId}/terminal/input`
+  const resizeUrl = terminalApiBase ? `${terminalApiBase}/resize` : `/api/servers/${serverId}/terminal/resize`
   const termRef = useRef<HTMLDivElement>(null)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const xtermRef = useRef<any>(null)
-  const fitAddonRef = useRef<{ fit: () => void } | null>(null)
-  const sseRef = useRef<EventSource | null>(null)
-  const wheelCarryRef = useRef(0)
 
   useEffect(() => {
     if (!termRef.current) return
+    const container = termRef.current
 
+    // Disposed flag prevents stale async work after React strict-mode double-mount
+    let disposed = false
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let terminal: any
+    let terminal: any = null
+    let sse: EventSource | null = null
+    let resizeObserver: ResizeObserver | null = null
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null
+    // Store handleResize so cleanup can remove the window listener
+    let handleResize: (() => void) | null = null
 
     async function init() {
-      const { Terminal } = await import('@xterm/xterm')
-      const { FitAddon } = await import('@xterm/addon-fit')
-      const { WebLinksAddon } = await import('@xterm/addon-web-links')
-      const { Unicode11Addon } = await import('@xterm/addon-unicode11')
+      const [
+        { Terminal },
+        { FitAddon },
+        { WebLinksAddon },
+        { Unicode11Addon },
+      ] = await Promise.all([
+        import('@xterm/xterm'),
+        import('@xterm/addon-fit'),
+        import('@xterm/addon-web-links'),
+        import('@xterm/addon-unicode11'),
+      ])
+
+      // If cleanup already ran while we were loading, bail out
+      if (disposed) return
 
       terminal = new Terminal({
         theme: {
@@ -49,65 +57,38 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
         fontSize: 13,
         cursorBlink: true,
-        scrollback: 50000,
-        scrollOnUserInput: false,
-        smoothScrollDuration: 0,
+        scrollback: 10000,
         allowProposedApi: true,
       })
 
       const fitAddon = new FitAddon()
-      fitAddonRef.current = fitAddon
-
       const unicode11 = new Unicode11Addon()
       terminal.loadAddon(unicode11)
       terminal.unicode.activeVersion = '11'
-
       terminal.loadAddon(fitAddon)
       terminal.loadAddon(new WebLinksAddon())
 
-      if (termRef.current) {
-        terminal.open(termRef.current)
-        fitAddon.fit()
-      }
+      if (disposed) { terminal.dispose(); return }
 
-      xtermRef.current = terminal
-      wheelCarryRef.current = 0
+      terminal.open(container)
+      fitAddon.fit()
 
-      // Keep mouse wheel for browser-side scrollback instead of passing it through
-      // to tmux, which makes server terminal history unreadable in the panel.
-      terminal.attachCustomWheelEventHandler((event: WheelEvent) => {
-        if (event.ctrlKey) return true
-
-        event.preventDefault()
-        event.stopPropagation()
-
-        wheelCarryRef.current += normalizeWheelDelta(event, terminal.rows || 24)
-        const wholeLines = wheelCarryRef.current > 0
-          ? Math.floor(wheelCarryRef.current)
-          : Math.ceil(wheelCarryRef.current)
-
-        if (wholeLines !== 0) {
-          terminal.scrollLines(wholeLines)
-          wheelCarryRef.current -= wholeLines
-        }
-
-        return false
-      })
-
-      // Handle user input
+      // --- Input: send each keystroke immediately ---
       terminal.onData((data: string) => {
+        if (disposed) return
+        const filtered = data.replace(TERMINAL_RESPONSE_RE, '')
+        if (!filtered) return
         fetch(inputUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data }),
+          body: JSON.stringify({ data: filtered }),
         }).catch(() => {})
       })
 
-      // Connect SSE
-      const sse = new EventSource(sseUrl)
-      sseRef.current = sse
-
+      // --- Output: SSE stream ---
+      sse = new EventSource(sseUrl)
       sse.onmessage = (event) => {
+        if (disposed) return
         try {
           const msg = JSON.parse(event.data)
           if (msg.type === 'history' || msg.type === 'data') {
@@ -115,47 +96,46 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
           }
         } catch {}
       }
-
       sse.onerror = () => {
+        if (disposed) return
         terminal.write('\r\n\x1b[33m[Connection lost. Reconnecting...]\x1b[0m\r\n')
       }
+
+      // --- Resize: debounced fit + server sync ---
+      handleResize = () => {
+        if (disposed) return
+        fitAddon.fit()
+        const cols = terminal.cols
+        const rows = terminal.rows
+        if (cols && rows) {
+          if (resizeTimer) clearTimeout(resizeTimer)
+          resizeTimer = setTimeout(() => {
+            if (disposed) return
+            fetch(resizeUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cols, rows }),
+            }).catch(() => {})
+          }, 200)
+        }
+      }
+
+      resizeObserver = new ResizeObserver(handleResize)
+      resizeObserver.observe(container)
+      window.addEventListener('resize', handleResize)
     }
 
     init()
 
-    // Handle resize — sync terminal size to server
-    const resizeUrl = terminalApiBase ? `${terminalApiBase}/resize` : `/api/servers/${serverId}/terminal/resize`
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null
-
-    function handleResize() {
-      if (!fitAddonRef.current || !xtermRef.current) return
-      fitAddonRef.current.fit()
-      const t = xtermRef.current
-      const cols = t.cols
-      const rows = t.rows
-      if (cols && rows) {
-        if (resizeTimer) clearTimeout(resizeTimer)
-        resizeTimer = setTimeout(() => {
-          fetch(resizeUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cols, rows }),
-          }).catch(() => {})
-        }, 150)
-      }
-    }
-    const resizeObserver = new ResizeObserver(handleResize)
-    if (termRef.current) resizeObserver.observe(termRef.current)
-    window.addEventListener('resize', handleResize)
-
     return () => {
-      resizeObserver.disconnect()
-      window.removeEventListener('resize', handleResize)
-      sseRef.current?.close()
-      xtermRef.current?.dispose()
+      disposed = true
+      if (resizeTimer) clearTimeout(resizeTimer)
+      if (resizeObserver) resizeObserver.disconnect()
+      if (handleResize) window.removeEventListener('resize', handleResize)
+      sse?.close()
+      terminal?.dispose()
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverId, sseUrl, inputUrl])
+  }, [serverId, sseUrl, inputUrl, resizeUrl])
 
   return (
     <div

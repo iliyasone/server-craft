@@ -82,6 +82,15 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   )
 
   useEffect(() => {
+    setCurrentPath(basePath)
+    setFiles([])
+    setSelected(new Set())
+    setRenamingPath(null)
+    setRenameValue('')
+    setError(null)
+  }, [basePath])
+
+  useEffect(() => {
     fetchFiles(currentPath)
   }, [currentPath, fetchFiles])
 
