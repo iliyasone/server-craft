@@ -60,6 +60,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   const [draggedPath, setDraggedPath] = useState<string | null>(null)
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const folderInputRef = useRef<HTMLInputElement>(null)
 
   const fetchFiles = useCallback(
     async (path: string) => {
@@ -163,6 +164,8 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
       formData.append('path', currentPath)
       for (const file of Array.from(fileList)) {
         formData.append('files', file)
+        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath
+        formData.append('relativePaths', relativePath || file.name)
       }
       const res = await fetch(`/api/servers/${serverId}/files/upload`, {
         method: 'POST',
@@ -405,6 +408,9 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         )}
         <IconBtn title="Upload files" onClick={() => fileInputRef.current?.click()} loading={uploading}>
           {uploading ? '…' : '↑'}
+        </IconBtn>
+        <IconBtn title="Upload folder" onClick={() => folderInputRef.current?.click()} loading={uploading}>
+          📁
         </IconBtn>
         <IconBtn title="Create folder" onClick={openCreateFolder} loading={creatingFolderLoading}>
           +
@@ -730,6 +736,19 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         ref={fileInputRef}
         type="file"
         multiple
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          if (e.target.files?.length) {
+            uploadFiles(e.target.files)
+            e.target.value = ''
+          }
+        }}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        multiple
+        {...({ webkitdirectory: 'true', directory: 'true' } as unknown as Record<string, string>)}
         style={{ display: 'none' }}
         onChange={(e) => {
           if (e.target.files?.length) {

@@ -2,6 +2,17 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient, getSFTP, execCommand } from '@/lib/ssh'
 import { SERVERS_DIR } from '@/lib/servers'
+import { shellQuote } from '@/lib/server-terminal'
+
+async function pathType(client: Awaited<ReturnType<typeof getSSHClient>>, path: string): Promise<'file' | 'directory' | 'missing'> {
+  const { stdout } = await execCommand(
+    client,
+    `if [ -d ${shellQuote(path)} ]; then echo directory; elif [ -f ${shellQuote(path)} ]; then echo file; else echo missing; fi`
+  )
+  const value = stdout.trim()
+  if (value === 'directory' || value === 'file') return value
+  return 'missing'
+}
 
 export async function GET(
   request: NextRequest,
@@ -27,7 +38,9 @@ export async function GET(
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
 
-    if (paths.length === 1) {
+    const shouldArchive = paths.length > 1 || (await pathType(client, paths[0])) === 'directory'
+
+    if (!shouldArchive) {
       const sftp = await getSFTP(client)
       const filePath = paths[0]
       const readStream = sftp.createReadStream(filePath)
@@ -58,7 +71,7 @@ export async function GET(
       })
     } else {
       const tarPath = `/tmp/craft-${id}-download-${Date.now()}.tar.gz`
-      const fileList = paths.map((p) => `"${p}"`).join(' ')
+      const fileList = paths.map((p) => shellQuote(p)).join(' ')
 
       await execCommand(client, `tar czf ${tarPath} ${fileList}`)
 
