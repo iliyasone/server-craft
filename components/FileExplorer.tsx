@@ -48,6 +48,8 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   const [error, setError] = useState<string | null>(null)
   const [uploadDragging, setUploadDragging] = useState(false) // files from desktop
   const [uploading, setUploading] = useState(false)
+  const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
+  const [uploadQueue, setUploadQueue] = useState<Array<{ id: string; name: string; status: 'uploading' | 'done' | 'error' }>>([])
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [createFolderName, setCreateFolderName] = useState('')
   const [creatingFolderLoading, setCreatingFolderLoading] = useState(false)
@@ -61,6 +63,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
+  const uploadMenuRef = useRef<HTMLDivElement>(null)
 
   const fetchFiles = useCallback(
     async (path: string) => {
@@ -100,6 +103,18 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   useEffect(() => {
     fetchFiles(currentPath)
   }, [currentPath, fetchFiles])
+
+  useEffect(() => {
+    function onClickOutside(event: MouseEvent) {
+      if (!uploadMenuRef.current?.contains(event.target as Node)) {
+        setUploadMenuOpen(false)
+      }
+    }
+    if (uploadMenuOpen) {
+      document.addEventListener('mousedown', onClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [uploadMenuOpen])
 
   // ── Selection ────────────────────────────────────────────────────────────
   function toggleSelect(path: string, e: React.MouseEvent) {
@@ -157,29 +172,52 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
 
   // ── Upload ───────────────────────────────────────────────────────────────
   async function uploadFiles(fileList: FileList) {
-    if (!fileList.length) return
+    const files = Array.from(fileList)
+    if (!files.length) return
+
     setUploading(true)
+    setError(null)
+    const queue = files.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      name: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+      status: 'uploading' as const,
+    }))
+    setUploadQueue(queue)
+
     try {
-      const formData = new FormData()
-      formData.append('path', currentPath)
-      for (const file of Array.from(fileList)) {
+      for (let index = 0; index < files.length; index++) {
+        const file = files[index]
+        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+
+        const formData = new FormData()
+        formData.append('path', currentPath)
         formData.append('files', file)
-        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath
-        formData.append('relativePaths', relativePath || file.name)
-      }
-      const res = await fetch(`/api/servers/${serverId}/files/upload`, {
-        method: 'POST',
-        body: formData,
-      })
-      if (res.ok) fetchFiles(currentPath)
-      else {
-        const data = await res.json()
-        setError(data.error || 'Upload failed')
+        formData.append('relativePaths', relativePath)
+
+        const res = await fetch(`/api/servers/${serverId}/files/upload`, {
+          method: 'POST',
+          body: formData,
+        })
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          setUploadQueue((prev) =>
+            prev.map((item, i) => (i === index ? { ...item, status: 'error' } : item))
+          )
+          setError(data.error || `Upload failed for ${relativePath}`)
+          continue
+        }
+
+        setUploadQueue((prev) =>
+          prev.map((item, i) => (i === index ? { ...item, status: 'done' } : item))
+        )
+        await fetchFiles(currentPath)
       }
     } catch {
       setError('Upload failed')
     } finally {
       setUploading(false)
+      setTimeout(() => setUploadQueue([]), 2500)
     }
   }
 
@@ -406,12 +444,51 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
             <div style={{ width: '1px', background: '#61475f40', height: '16px', margin: '0 2px' }} />
           </>
         )}
-        <IconBtn title="Upload files" onClick={() => fileInputRef.current?.click()} loading={uploading}>
-          {uploading ? '…' : '↑'}
-        </IconBtn>
-        <IconBtn title="Upload folder" onClick={() => folderInputRef.current?.click()} loading={uploading}>
-          📁
-        </IconBtn>
+        <div ref={uploadMenuRef} style={{ position: 'relative' }}>
+          <IconBtn
+            title="Upload files or folder"
+            onClick={() => setUploadMenuOpen((v) => !v)}
+            loading={uploading}
+            wide
+          >
+            {uploading ? '…' : 'Upload'}
+          </IconBtn>
+          {uploadMenuOpen && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 6px)',
+                right: 0,
+                minWidth: '180px',
+                background: '#1a0a1a',
+                border: '1px solid #61475f70',
+                borderRadius: '8px',
+                boxShadow: '0 8px 20px #00000055',
+                zIndex: 25,
+                padding: '6px',
+              }}
+            >
+              <button
+                onClick={() => {
+                  setUploadMenuOpen(false)
+                  fileInputRef.current?.click()
+                }}
+                style={uploadMenuItemStyle}
+              >
+                Upload files…
+              </button>
+              <button
+                onClick={() => {
+                  setUploadMenuOpen(false)
+                  folderInputRef.current?.click()
+                }}
+                style={uploadMenuItemStyle}
+              >
+                Upload folder…
+              </button>
+            </div>
+          )}
+        </div>
         <IconBtn title="Create folder" onClick={openCreateFolder} loading={creatingFolderLoading}>
           +
         </IconBtn>
@@ -497,6 +574,30 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         </div>
       )}
 
+      {uploadQueue.length > 0 && (
+        <div
+          style={{
+            background: '#22c55e12',
+            borderBottom: '1px solid #fd87f620',
+            padding: '6px 12px',
+            fontSize: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '4px',
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ color: '#9cf6bc' }}>
+            Uploading {uploadQueue.filter((i) => i.status === 'uploading').length}/{uploadQueue.length}
+          </span>
+          {uploadQueue.slice(0, 4).map((item) => (
+            <span key={item.id} style={{ color: item.status === 'error' ? '#f87171' : '#d3fadf' }}>
+              {item.status === 'uploading' ? '⏳' : item.status === 'done' ? '✅' : '❌'} {item.name}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* File list */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {loading ? (
@@ -529,6 +630,20 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                   </td>
                 </tr>
               )}
+
+              {uploadQueue
+                .filter((item) => item.status === 'uploading')
+                .map((item) => (
+                  <tr key={`uploading-${item.id}`} style={{ borderBottom: '1px solid #ffffff08', background: '#22c55e0f' }}>
+                    <td style={{ padding: '7px 12px', width: '24px' }} />
+                    <td style={{ padding: '7px 8px', color: '#d3fadf' }}>
+                      <span style={{ marginRight: '6px' }}>⏳</span>
+                      <span title={item.name}>{item.name}</span>
+                    </td>
+                    <td style={{ padding: '7px 8px', textAlign: 'right', color: '#9cf6bc' }}>uploading…</td>
+                    <td style={{ padding: '7px 8px', textAlign: 'right', color: '#9cf6bc' }}>in progress</td>
+                  </tr>
+                ))}
 
               {files.map((file) => {
                 const isSelected = selected.has(file.path)
@@ -766,18 +881,42 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   )
 }
 
+const uploadMenuItemStyle: {
+  width: string
+  textAlign: 'left'
+  background: string
+  color: string
+  border: string
+  borderRadius: string
+  padding: string
+  fontSize: string
+  cursor: 'pointer'
+} = {
+  width: '100%',
+  textAlign: 'left',
+  background: 'transparent',
+  color: 'white',
+  border: 'none',
+  borderRadius: '6px',
+  padding: '7px 10px',
+  fontSize: '13px',
+  cursor: 'pointer',
+}
+
 function IconBtn({
   children,
   title,
   onClick,
   danger,
   loading,
+  wide,
 }: {
   children: React.ReactNode
   title: string
   onClick: () => void
   danger?: boolean
   loading?: boolean
+  wide?: boolean
 }) {
   return (
     <button
@@ -788,8 +927,9 @@ function IconBtn({
         background: 'transparent',
         border: '1px solid ' + (danger ? '#dc262650' : '#61475f50'),
         color: danger ? '#f87171' : '#876f86',
-        width: '28px',
+        width: wide ? 'auto' : '28px',
         height: '28px',
+        padding: wide ? '0 10px' : undefined,
         borderRadius: '6px',
         cursor: 'pointer',
         fontSize: '14px',
