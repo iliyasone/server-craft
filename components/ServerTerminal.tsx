@@ -12,9 +12,9 @@ interface ServerTerminalProps {
 const TERMINAL_RESPONSE_RE = /\x1b\[[\?>]?[\d;]*c|\x1b\[\d+;\d+R|\x1bP[^\x1b]*\x1b\\/g
 
 export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerminalProps) {
-  const sseUrl = terminalApiBase ?? `/api/servers/${serverId}/terminal`
-  const inputUrl = terminalApiBase ? `${terminalApiBase}/input` : `/api/servers/${serverId}/terminal/input`
-  const resizeUrl = terminalApiBase ? `${terminalApiBase}/resize` : `/api/servers/${serverId}/terminal/resize`
+  const wsPath = terminalApiBase
+    ? `${terminalApiBase}/ws`
+    : `/api/servers/${encodeURIComponent(serverId)}/terminal/ws`
   const termRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -25,11 +25,39 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
     let disposed = false
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let terminal: any = null
-    let sse: EventSource | null = null
+    let socket: WebSocket | null = null
     let resizeObserver: ResizeObserver | null = null
     let resizeTimer: ReturnType<typeof setTimeout> | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let reconnectDelay = 1000
     // Store handleResize so cleanup can remove the window listener
     let handleResize: (() => void) | null = null
+
+    function createSocketUrl(cols: number, rows: number): string {
+      const url = new URL(wsPath, window.location.origin)
+      url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      url.searchParams.set('cols', String(cols))
+      url.searchParams.set('rows', String(rows))
+      return url.toString()
+    }
+
+    function sendMessage(message: unknown) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify(message))
+    }
+
+    function closeSocket() {
+      if (!socket) return
+      const current = socket
+      socket = null
+      current.onopen = null
+      current.onmessage = null
+      current.onerror = null
+      current.onclose = null
+      if (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING) {
+        current.close()
+      }
+    }
 
     async function init() {
       const [
@@ -73,35 +101,68 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       terminal.open(container)
       fitAddon.fit()
 
-      // --- Input: send each keystroke immediately ---
+      const connect = () => {
+        if (disposed) return
+        closeSocket()
+
+        const nextSocket = new WebSocket(createSocketUrl(terminal.cols, terminal.rows))
+        socket = nextSocket
+
+        nextSocket.onopen = () => {
+          if (disposed || socket !== nextSocket) return
+          reconnectDelay = 1000
+          terminal.reset()
+          terminal.focus()
+          sendMessage({ type: 'resize', cols: terminal.cols, rows: terminal.rows })
+        }
+
+        nextSocket.onmessage = (event) => {
+          if (disposed || socket !== nextSocket || typeof event.data !== 'string') return
+          try {
+            const msg = JSON.parse(event.data)
+            if (msg.type === 'data' && typeof msg.data === 'string') {
+              terminal.write(msg.data)
+            }
+          } catch {}
+        }
+
+        nextSocket.onerror = () => {
+          if (socket !== nextSocket) return
+          try { nextSocket.close() } catch {}
+        }
+
+        nextSocket.onclose = () => {
+          if (socket === nextSocket) {
+            socket = null
+          }
+          if (disposed) return
+          terminal.write('\r\n\x1b[33m[Connection lost. Reconnecting...]\x1b[0m\r\n')
+          if (reconnectTimer) return
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null
+            if (disposed) return
+            connect()
+          }, reconnectDelay)
+          reconnectDelay = Math.min(reconnectDelay * 2, 5000)
+        }
+      }
+
+      // --- Input: send each keystroke immediately over the same socket ---
       terminal.onData((data: string) => {
         if (disposed) return
         const filtered = data.replace(TERMINAL_RESPONSE_RE, '')
         if (!filtered) return
-        fetch(inputUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: filtered }),
-        }).catch(() => {})
+        sendMessage({ type: 'input', data: filtered })
       })
 
-      // --- Output: SSE stream ---
-      sse = new EventSource(`${sseUrl}?cols=${terminal.cols}&rows=${terminal.rows}`)
-      sse.onmessage = (event) => {
+      terminal.onBinary((data: string) => {
         if (disposed) return
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'history' || msg.type === 'data') {
-            terminal.write(msg.data)
-          }
-        } catch {}
-      }
-      sse.onerror = () => {
-        if (disposed) return
-        terminal.write('\r\n\x1b[33m[Connection lost. Reconnecting...]\x1b[0m\r\n')
-      }
+        sendMessage({ type: 'binary', data: btoa(data) })
+      })
 
-      // --- Resize: debounced fit + server sync ---
+      connect()
+
+      // --- Resize: debounced fit + server sync over the same socket ---
       handleResize = () => {
         if (disposed) return
         fitAddon.fit()
@@ -111,11 +172,7 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
           if (resizeTimer) clearTimeout(resizeTimer)
           resizeTimer = setTimeout(() => {
             if (disposed) return
-            fetch(resizeUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ cols, rows }),
-            }).catch(() => {})
+            sendMessage({ type: 'resize', cols, rows })
           }, 200)
         }
       }
@@ -130,12 +187,13 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
     return () => {
       disposed = true
       if (resizeTimer) clearTimeout(resizeTimer)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
       if (resizeObserver) resizeObserver.disconnect()
       if (handleResize) window.removeEventListener('resize', handleResize)
-      sse?.close()
+      closeSocket()
       terminal?.dispose()
     }
-  }, [serverId, sseUrl, inputUrl, resizeUrl])
+  }, [serverId, wsPath])
 
   return (
     <div

@@ -37,6 +37,18 @@ export function getServerSessionName(serverId: string): string {
   return `craft-${serverId}`
 }
 
+export function buildInteractiveLoginShellCommand(): string {
+  return (
+    `if [ -x /bin/bash ]; then ` +
+      `exec /bin/bash -il; ` +
+    `elif [ -n "$SHELL" ] && [ -x "$SHELL" ]; then ` +
+      `exec "$SHELL" -il; ` +
+    `else ` +
+      `exec sh -i; ` +
+    `fi`
+  )
+}
+
 function getServerDir(serverId: string): string {
   return `${SERVERS_DIR}/${serverId}`
 }
@@ -51,7 +63,11 @@ export function buildEnsureServerSessionCommand(serverId: string): string {
     `fi; ` +
     `mkdir -p ${shellQuote(serverDir)} 2>/dev/null; ` +
     `tmux has-session -t ${shellQuote(sessionName)} 2>/dev/null || ` +
-      `tmux new-session -d -s ${shellQuote(sessionName)} -c ${shellQuote(serverDir)}; ` +
+      `if [ -x /bin/bash ]; then ` +
+        `tmux new-session -d -s ${shellQuote(sessionName)} -c ${shellQuote(serverDir)} /bin/bash -il; ` +
+      `else ` +
+        `tmux new-session -d -s ${shellQuote(sessionName)} -c ${shellQuote(serverDir)}; ` +
+      `fi; ` +
     `tmux set-option -t ${shellQuote(sessionName)} history-limit 50000 >/dev/null 2>&1 || true`
   )
 }

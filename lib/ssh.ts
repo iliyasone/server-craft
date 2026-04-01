@@ -74,14 +74,6 @@ async function reconnectSSH(key: string): Promise<Client> {
   const { creds } = entry
   dropFromPool(key)
 
-  // Also clean up any terminal sessions on this connection
-  if (global.terminalSessions) {
-    for (const [sid, session] of global.terminalSessions.entries()) {
-      try { (session.stream as NodeJS.WritableStream).end() } catch {}
-      global.terminalSessions.delete(sid)
-    }
-  }
-
   const client = await connectSSH(creds.host, creds.username, creds.password)
   global.sshPool!.set(key, { client, creds, lastUsed: Date.now() })
 
@@ -165,9 +157,15 @@ function execCommandOnce(
 }
 
 function getPoolKey(client: Client): string {
+  const pooledKey = getPoolKeyForClient(client)
+  if (pooledKey) return pooledKey
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sock = (client as any)._sock
-  return sock?.remoteAddress ? `${sock.remoteAddress}` : 'default'
+  const remoteAddress = sock?.remoteAddress ?? 'unknown'
+  const remotePort = sock?.remotePort ?? 'unknown'
+  const localPort = sock?.localPort ?? 'unknown'
+  return `${remoteAddress}:${remotePort}:${localPort}`
 }
 
 function getPoolKeyForClient(client: Client): string | undefined {

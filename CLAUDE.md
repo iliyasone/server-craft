@@ -23,7 +23,7 @@ Modern Minecraft (1.17+) and Forge require **Java 17 or higher**. The setup rout
 - **Start command priority**: If `run.sh` exists, use it (`bash run.sh nogui`). Otherwise, run the jar directly.
 
 ### Terminal (xterm.js)
-- Uses SSE for output, POST for input — NOT WebSocket (Next.js limitation)
+- Uses one WebSocket per terminal tab, and one SSH PTY channel behind it
 - React strict mode in dev causes double-mount. The `init()` is async (dynamic imports), so a `disposed` flag is required to prevent stale instances.
 - xterm.js responds to DA (Device Attributes) queries from tmux with escape sequences via `onData`. These MUST be filtered out before sending as input, or they appear as garbage text (`0;276;0c`) on the command line.
 - Before sending commands to the terminal (start, stop, install), always prepend `\x15` (Ctrl+U) to clear any existing text on the command line.
@@ -31,16 +31,15 @@ Modern Minecraft (1.17+) and Forge require **Java 17 or higher**. The setup rout
 ### SSH / tmux
 - Terminal sessions use tmux: `craft-<serverId>` session names
 - SSH connection pool is global (survives HMR in dev)
-- Terminal sessions are global Map (`global.terminalSessions`)
-- Term type: `screen-256color` for server shells, `xterm-256color` for root shell
+- Term type: `xterm-256color` for interactive terminal PTY channels
 
 ## Key Files
 
 - `lib/servers.ts` — Server detection, start/install command generation, type detection
-- `lib/terminal-sessions.ts` — SSH shell + tmux session management
 - `lib/ssh.ts` — SSH connection pool with channel exhaustion handling
 - `app/api/setup/route.ts` — Remote server provisioning (tmux, Java 17)
 - `components/ServerTerminal.tsx` — xterm.js terminal component
+- `server.ts` — custom Next.js server with terminal WebSocket upgrade handling
 - `app/servers/[id]/ServerPageClient.tsx` — Main server page with Install/Start/Stop
 
 ## Dev

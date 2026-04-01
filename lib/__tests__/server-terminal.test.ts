@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildEnsureServerSessionCommand,
   buildTmuxSendKeysCommand,
   formatServerUptime,
   parseServerRuntimeStatus,
@@ -39,6 +40,14 @@ describe('parseServerRuntimeStatus', () => {
 
   it('treats shell prompt as stopped even if old logs remain in history', () => {
     expect(parseServerRuntimeStatus('bash', 'Done (63.149s)! For help, type "help"')).toBe('stopped')
+  })
+})
+
+describe('buildEnsureServerSessionCommand', () => {
+  it('boots new tmux sessions with bash when available', () => {
+    expect(buildEnsureServerSessionCommand('alpha')).toContain(
+      "tmux new-session -d -s 'craft-alpha' -c '/home/server-craft/alpha' /bin/bash -il"
+    )
   })
 })
 
