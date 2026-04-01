@@ -49,7 +49,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   const [uploadDragging, setUploadDragging] = useState(false) // files from desktop
   const [uploading, setUploading] = useState(false)
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
-  const [uploadQueue, setUploadQueue] = useState<Array<{ id: string; name: string; status: 'uploading' | 'done' | 'error' }>>([])
+  const [uploadQueue, setUploadQueue] = useState<Array<{ id: string; name: string; status: 'pending' | 'uploading' | 'done' | 'error' }>>([])
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [createFolderName, setCreateFolderName] = useState('')
   const [creatingFolderLoading, setCreatingFolderLoading] = useState(false)
@@ -180,7 +180,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     const queue = files.map((file, index) => ({
       id: `${Date.now()}-${index}-${file.name}`,
       name: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
-      status: 'uploading' as const,
+      status: 'pending' as const,
     }))
     setUploadQueue(queue)
 
@@ -188,6 +188,9 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
       for (let index = 0; index < files.length; index++) {
         const file = files[index]
         const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+        setUploadQueue((prev) =>
+          prev.map((item, i) => (i === index ? { ...item, status: 'uploading' } : item))
+        )
 
         const formData = new FormData()
         formData.append('path', currentPath)
@@ -591,8 +594,23 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
             Uploading {uploadQueue.filter((i) => i.status === 'uploading').length}/{uploadQueue.length}
           </span>
           {uploadQueue.slice(0, 4).map((item) => (
-            <span key={item.id} style={{ color: item.status === 'error' ? '#f87171' : '#d3fadf' }}>
-              {item.status === 'uploading' ? '⏳' : item.status === 'done' ? '✅' : '❌'} {item.name}
+            <span key={item.id} style={{ color: item.status === 'error' ? '#f87171' : '#d3fadf', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span
+                style={{
+                  width: '10px',
+                  height: '10px',
+                  borderRadius: '999px',
+                  background:
+                    item.status === 'pending'
+                      ? '#6b7280'
+                      : item.status === 'uploading'
+                      ? '#22c55e'
+                      : item.status === 'done'
+                      ? '#16a34a'
+                      : '#dc2626',
+                }}
+              />
+              {item.name}
             </span>
           ))}
         </div>
@@ -632,16 +650,35 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
               )}
 
               {uploadQueue
-                .filter((item) => item.status === 'uploading')
+                .filter((item) => item.status === 'pending' || item.status === 'uploading')
                 .map((item) => (
-                  <tr key={`uploading-${item.id}`} style={{ borderBottom: '1px solid #ffffff08', background: '#22c55e0f' }}>
+                  <tr
+                    key={`uploading-${item.id}`}
+                    style={{
+                      borderBottom: '1px solid #ffffff08',
+                      background: item.status === 'pending' ? '#ffffff06' : '#22c55e0f',
+                    }}
+                  >
                     <td style={{ padding: '7px 12px', width: '24px' }} />
                     <td style={{ padding: '7px 8px', color: '#d3fadf' }}>
-                      <span style={{ marginRight: '6px' }}>⏳</span>
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          marginRight: '6px',
+                          width: '10px',
+                          height: '10px',
+                          borderRadius: '999px',
+                          background: item.status === 'pending' ? '#6b7280' : '#22c55e',
+                        }}
+                      />
                       <span title={item.name}>{item.name}</span>
                     </td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', color: '#9cf6bc' }}>uploading…</td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', color: '#9cf6bc' }}>in progress</td>
+                    <td style={{ padding: '7px 8px', textAlign: 'right', color: item.status === 'pending' ? '#9ca3af' : '#9cf6bc' }}>
+                      {item.status === 'pending' ? 'queued' : 'uploading…'}
+                    </td>
+                    <td style={{ padding: '7px 8px', textAlign: 'right', color: item.status === 'pending' ? '#9ca3af' : '#9cf6bc' }}>
+                      {item.status === 'pending' ? 'waiting' : 'in progress'}
+                    </td>
                   </tr>
                 ))}
 
