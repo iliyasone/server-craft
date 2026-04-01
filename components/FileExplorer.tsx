@@ -210,6 +210,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   async function uploadFiles(fileList: FileList) {
     const files = Array.from(fileList)
     if (!files.length) return
+    const targetPath = currentPath
 
     setUploading(true)
     setError(null)
@@ -222,6 +223,8 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     setUploadQueue(queue)
 
     try {
+      let uploadedAny = false
+
       for (let index = 0; index < files.length; index++) {
         const file = files[index]
         const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
@@ -229,7 +232,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
           prev.map((item, i) => (i === index ? { ...item, status: 'uploading', progress: 0 } : item))
         )
 
-        const uploadUrl = `/api/servers/${serverId}/files/upload?path=${encodeURIComponent(currentPath)}&relativePath=${encodeURIComponent(relativePath)}`
+        const uploadUrl = `/api/servers/${serverId}/files/upload?path=${encodeURIComponent(targetPath)}&relativePath=${encodeURIComponent(relativePath)}`
         const res = await uploadFileWithProgress(uploadUrl, file, (progress) => {
           setUploadQueue((prev) =>
             prev.map((item, i) => (i === index ? { ...item, progress } : item))
@@ -247,7 +250,11 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         setUploadQueue((prev) =>
           prev.map((item, i) => (i === index ? { ...item, status: 'done', progress: 100 } : item))
         )
-        await fetchFiles(currentPath)
+        uploadedAny = true
+      }
+
+      if (uploadedAny) {
+        await fetchFiles(targetPath)
       }
     } catch {
       setError('Upload failed')
