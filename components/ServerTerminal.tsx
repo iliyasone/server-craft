@@ -33,6 +33,20 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
     // Store handleResize so cleanup can remove the window listener
     let handleResize: (() => void) | null = null
 
+    function getWheelLineDelta(event: WheelEvent): number {
+      if (!terminal) return 0
+
+      let delta = event.deltaY
+      if (event.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+        delta /= 40
+      } else if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        delta *= terminal.rows
+      }
+
+      if (!Number.isFinite(delta) || delta === 0) return 0
+      return delta > 0 ? Math.ceil(delta) : Math.floor(delta)
+    }
+
     function createSocketUrl(cols: number, rows: number): string {
       const url = new URL(wsPath, window.location.origin)
       url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -100,6 +114,21 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
 
       terminal.open(container)
       fitAddon.fit()
+
+      terminal.attachCustomWheelEventHandler((event: WheelEvent) => {
+        if (disposed || terminal.buffer.active.type !== 'normal') {
+          return true
+        }
+
+        const lineDelta = getWheelLineDelta(event)
+        if (lineDelta === 0) {
+          return false
+        }
+
+        terminal.scrollLines(lineDelta)
+        event.preventDefault()
+        return false
+      })
 
       const connect = () => {
         if (disposed) return

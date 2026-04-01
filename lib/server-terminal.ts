@@ -190,15 +190,41 @@ export function parseServerRuntimeStatus(
   paneOutput: string
 ): ServerRuntimeStatus {
   const currentCommand = paneCommand.trim()
-  if (SHELL_COMMANDS.has(currentCommand)) {
+  const hasReadyMarker = READY_MARKERS.some((marker) => paneOutput.includes(marker))
+  const lastLine = getLastMeaningfulLine(paneOutput)
+
+  // Minecraft's live console prompt is a bare ">" on the last visible line.
+  // Treat it as running even through shell wrappers like `bash run.sh`.
+  if (looksLikeServerConsolePrompt(lastLine)) {
+    return 'running'
+  }
+
+  if (looksLikeShellPrompt(lastLine) || SHELL_COMMANDS.has(currentCommand)) {
     return 'stopped'
   }
 
-  if (READY_MARKERS.some((marker) => paneOutput.includes(marker))) {
+  if (hasReadyMarker) {
     return 'running'
   }
 
   return 'starting'
+}
+
+function getLastMeaningfulLine(output: string): string {
+  const lines = output.replace(/\r/g, '').split('\n')
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]
+    if (line.trim().length > 0) return line
+  }
+  return ''
+}
+
+function looksLikeServerConsolePrompt(line: string): boolean {
+  return line.trim() === '>'
+}
+
+function looksLikeShellPrompt(line: string): boolean {
+  return /[$#%]\s*$/.test(line.trimEnd())
 }
 
 export function formatServerUptime(createdAtEpochSeconds: string): string | null {

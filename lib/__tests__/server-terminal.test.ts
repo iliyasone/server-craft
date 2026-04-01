@@ -41,6 +41,24 @@ describe('parseServerRuntimeStatus', () => {
   it('treats shell prompt as stopped even if old logs remain in history', () => {
     expect(parseServerRuntimeStatus('bash', 'Done (63.149s)! For help, type "help"')).toBe('stopped')
   })
+
+  it('treats minecraft console prompt as running even through a shell wrapper', () => {
+    expect(
+      parseServerRuntimeStatus(
+        'bash',
+        '[21:44:16] [Server thread/INFO] [minecraft/MinecraftServer]: [Not Secure] [Server] 152\n>'
+      )
+    ).toBe('running')
+  })
+
+  it('treats a shell prompt as stopped', () => {
+    expect(
+      parseServerRuntimeStatus(
+        'run.sh',
+        'root@ru-vmmini:/home/server-craft/forge-1_20_1#'
+      )
+    ).toBe('stopped')
+  })
 })
 
 describe('buildEnsureServerSessionCommand', () => {
