@@ -10,7 +10,14 @@ export async function GET() {
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
     const servers = await listServers(client)
-    return NextResponse.json({ servers })
+    return NextResponse.json(
+      { servers },
+      {
+        headers: {
+          'Cache-Control': 'no-store',
+        },
+      }
+    )
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to list servers'
     return NextResponse.json({ error: message }, { status: 500 })

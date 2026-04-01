@@ -60,7 +60,7 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch(`/api/servers/${id}/status`)
+      const res = await fetch(`/api/servers/${id}/status`, { cache: 'no-store' })
       if (res.ok) {
         const data = await res.json()
         setStatus(data.status === 'running' || data.status === 'starting' ? data.status : 'stopped')

@@ -8,7 +8,7 @@ import NewServerModal from './NewServerModal'
 interface Server {
   id: string
   name: string
-  status: 'running' | 'stopped'
+  status: 'running' | 'starting' | 'stopped'
 }
 
 export default function Sidebar() {
@@ -21,7 +21,7 @@ export default function Sidebar() {
 
   const fetchServers = useCallback(async () => {
     try {
-      const res = await fetch('/api/servers')
+      const res = await fetch('/api/servers', { cache: 'no-store' })
       if (res.ok) {
         const data = await res.json()
         setServers(data.servers || [])
@@ -138,10 +138,21 @@ export default function Sidebar() {
               >
                 <div
                   style={{
-                    width: '7px',
-                    height: '7px',
+                    width: '8px',
+                    height: '8px',
                     borderRadius: '50%',
-                    background: server.status === 'running' ? '#22c55e' : '#61475f',
+                    background:
+                      server.status === 'running'
+                        ? '#22c55e'
+                        : server.status === 'starting'
+                          ? '#f59e0b'
+                          : '#61475f',
+                    border:
+                      server.status === 'running'
+                        ? '1px solid #14532d'
+                        : server.status === 'starting'
+                          ? '1px solid #78350f'
+                          : '1px solid #3d1f3b',
                     flexShrink: 0,
                   }}
                 />

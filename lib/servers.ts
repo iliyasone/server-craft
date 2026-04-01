@@ -1,13 +1,15 @@
 import { Client } from 'ssh2'
+import { getServerRuntimeInfo, type ServerRuntimeStatus } from './server-terminal'
+import { SERVERS_DIR } from './server-config'
 import { execCommand } from './ssh'
 
-export const SERVERS_DIR = '/home/server-craft'
+export { SERVERS_DIR } from './server-config'
 
 export interface Server {
   id: string
   name: string
   path: string
-  status: 'running' | 'stopped'
+  status: ServerRuntimeStatus
 }
 
 export interface ServerInfo {
@@ -25,49 +27,45 @@ export async function listServers(client: Client): Promise<Server[]> {
     `for dir in ${SERVERS_DIR}/*/; do ` +
       `[ -d "$dir" ] || continue; ` +
       `name=$(basename "$dir"); ` +
-      `status="stopped"; ` +
-      `if command -v tmux >/dev/null 2>&1; then ` +
-        `if tmux has-session -t "craft-$name" 2>/dev/null; then ` +
-          `cmd=$(tmux list-panes -t "craft-$name" -F "#{pane_current_command}" 2>/dev/null); ` +
-          `case "$cmd" in bash|sh|zsh|fish|dash|tmux|"") ;; *) status="running" ;; esac; ` +
-        `fi; ` +
-      `else ` +
-        `pgrep -f "java.*${SERVERS_DIR}/$name" >/dev/null 2>&1 && status="running"; ` +
-      `fi; ` +
-      `echo "$name:$status"; ` +
+      `echo "$name"; ` +
     `done`
   )
 
-  return stdout
+  const names = stdout
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l.includes(':'))
-    .map((line) => {
-      const [name, status] = line.split(':')
-      return {
-        id: name,
-        name,
-        path: `${SERVERS_DIR}/${name}`,
-        status: (status === 'running' ? 'running' : 'stopped') as 'running' | 'stopped',
+    .filter(Boolean)
+
+  const servers = await Promise.all(
+    names.map(async (name) => {
+      try {
+        const { status } = await getServerRuntimeInfo(client, name)
+        return {
+          id: name,
+          name,
+          path: `${SERVERS_DIR}/${name}`,
+          status,
+        }
+      } catch {
+        return {
+          id: name,
+          name,
+          path: `${SERVERS_DIR}/${name}`,
+          status: 'stopped' as const,
+        }
       }
     })
+  )
+
+  return servers
 }
 
 export async function getServerStatus(
   client: Client,
   name: string
-): Promise<'running' | 'stopped'> {
-  const { stdout } = await execCommand(client,
-    `if command -v tmux >/dev/null 2>&1; then ` +
-      `if tmux has-session -t craft-${name} 2>/dev/null; then ` +
-        `cmd=$(tmux list-panes -t craft-${name} -F "#{pane_current_command}" 2>/dev/null); ` +
-        `case "$cmd" in bash|sh|zsh|fish|dash|tmux|"") echo stopped ;; *) echo running ;; esac; ` +
-      `else echo stopped; fi; ` +
-    `else ` +
-      `pgrep -f "java.*${SERVERS_DIR}/${name}" >/dev/null 2>&1 && echo running || echo stopped; ` +
-    `fi`
-  )
-  return stdout.trim() === 'running' ? 'running' : 'stopped'
+): Promise<ServerRuntimeStatus> {
+  const { status } = await getServerRuntimeInfo(client, name)
+  return status
 }
 
 function shellQuote(value: string): string {

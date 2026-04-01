@@ -15,10 +15,17 @@ export async function GET(
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
     const { status, uptime } = await getServerRuntimeInfo(client, id)
-    return NextResponse.json({
-      status,
-      uptime,
-    })
+    return NextResponse.json(
+      {
+        status,
+        uptime,
+      },
+      {
+        headers: {
+          'Cache-Control': 'no-store',
+        },
+      }
+    )
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to get status'
     return NextResponse.json({ error: message }, { status: 500 })

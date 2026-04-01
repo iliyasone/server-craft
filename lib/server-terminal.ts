@@ -1,5 +1,5 @@
 import { Client } from 'ssh2'
-import { SERVERS_DIR } from './servers'
+import { SERVERS_DIR } from './server-config'
 import { execCommand } from './ssh'
 
 export type ServerRuntimeStatus = 'running' | 'starting' | 'stopped'
@@ -10,6 +10,16 @@ interface TerminalKeyToken {
 }
 
 const READY_MARKERS = ['Done (', 'For help, type "help"']
+const SERVER_OUTPUT_MARKERS = [
+  '[Server thread/',
+  '[Render thread/',
+  '[main/',
+  'MinecraftServer',
+  'PermissionAPI/',
+  '/INFO]',
+  '/WARN]',
+  '/ERROR]',
+]
 const SHELL_COMMANDS = new Set(['', 'bash', 'sh', 'zsh', 'fish', 'dash', 'tmux'])
 const ESCAPE_SEQUENCES: Array<[string, string]> = [
   ['\x1b[1;5A', 'C-Up'],
@@ -68,6 +78,7 @@ export function buildEnsureServerSessionCommand(serverId: string): string {
       `else ` +
         `tmux new-session -d -s ${shellQuote(sessionName)} -c ${shellQuote(serverDir)}; ` +
       `fi; ` +
+    `tmux set-option -t ${shellQuote(sessionName)} mouse on >/dev/null 2>&1 || true; ` +
     `tmux set-option -t ${shellQuote(sessionName)} history-limit 50000 >/dev/null 2>&1 || true`
   )
 }
@@ -190,7 +201,6 @@ export function parseServerRuntimeStatus(
   paneOutput: string
 ): ServerRuntimeStatus {
   const currentCommand = paneCommand.trim()
-  const hasReadyMarker = READY_MARKERS.some((marker) => paneOutput.includes(marker))
   const lastLine = getLastMeaningfulLine(paneOutput)
 
   // Minecraft's live console prompt is a bare ">" on the last visible line.
@@ -199,12 +209,18 @@ export function parseServerRuntimeStatus(
     return 'running'
   }
 
-  if (looksLikeShellPrompt(lastLine) || SHELL_COMMANDS.has(currentCommand)) {
+  // Once the shell prompt is back, the server process has exited even if old
+  // startup logs are still visible in tmux history.
+  if (looksLikeShellPrompt(lastLine)) {
     return 'stopped'
   }
 
-  if (hasReadyMarker) {
+  if (READY_MARKERS.some((marker) => paneOutput.includes(marker))) {
     return 'running'
+  }
+
+  if (SHELL_COMMANDS.has(currentCommand)) {
+    return hasRecentServerOutput(paneOutput) ? 'starting' : 'stopped'
   }
 
   return 'starting'
@@ -225,6 +241,20 @@ function looksLikeServerConsolePrompt(line: string): boolean {
 
 function looksLikeShellPrompt(line: string): boolean {
   return /[$#%]\s*$/.test(line.trimEnd())
+}
+
+function hasRecentServerOutput(output: string): boolean {
+  const lines = output
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-20)
+
+  return lines.some((line) => {
+    if (/^\[\d{2}:\d{2}:\d{2}\]/.test(line)) return true
+    return SERVER_OUTPUT_MARKERS.some((marker) => line.includes(marker))
+  })
 }
 
 export function formatServerUptime(createdAtEpochSeconds: string): string | null {

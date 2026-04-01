@@ -39,7 +39,21 @@ describe('parseServerRuntimeStatus', () => {
   })
 
   it('treats shell prompt as stopped even if old logs remain in history', () => {
-    expect(parseServerRuntimeStatus('bash', 'Done (63.149s)! For help, type "help"')).toBe('stopped')
+    expect(
+      parseServerRuntimeStatus(
+        'bash',
+        '[21:44:16] [Server thread/INFO] [minecraft/MinecraftServer]: Done (63.149s)! For help, type "help"\nroot@ru-vmmini:/home/server-craft/forge-1_20_1#'
+      )
+    ).toBe('stopped')
+  })
+
+  it('treats live minecraft logs through a shell wrapper as starting', () => {
+    expect(
+      parseServerRuntimeStatus(
+        'bash',
+        '[21:44:16] [Server thread/INFO] [ne.mi.se.pe.PermissionAPI/]: Successfully initialized permission handler forge:default_handler'
+      )
+    ).toBe('starting')
   })
 
   it('treats minecraft console prompt as running even through a shell wrapper', () => {
@@ -62,9 +76,13 @@ describe('parseServerRuntimeStatus', () => {
 })
 
 describe('buildEnsureServerSessionCommand', () => {
-  it('boots new tmux sessions with bash when available', () => {
-    expect(buildEnsureServerSessionCommand('alpha')).toContain(
+  it('boots new tmux sessions with bash and enables mouse mode', () => {
+    const command = buildEnsureServerSessionCommand('alpha')
+    expect(command).toContain(
       "tmux new-session -d -s 'craft-alpha' -c '/home/server-craft/alpha' /bin/bash -il"
+    )
+    expect(command).toContain(
+      "tmux set-option -t 'craft-alpha' mouse on >/dev/null 2>&1 || true"
     )
   })
 })
