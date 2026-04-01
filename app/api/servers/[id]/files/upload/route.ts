@@ -3,16 +3,37 @@ import { getSession } from '@/lib/session'
 import { getSSHClient, getSFTP, execCommand } from '@/lib/ssh'
 import { SERVERS_DIR } from '@/lib/servers'
 import { shellQuote } from '@/lib/server-terminal'
-import { createWriteStream } from 'fs'
-import { mkdir, mkdtemp, rm } from 'fs/promises'
-import { join } from 'path'
-import { tmpdir } from 'os'
-import { finished } from 'stream/promises'
+import type { SFTPWrapper } from 'ssh2'
+
+export const maxDuration = 300
 
 function normalizeRelativePath(path: string): string | null {
   const normalized = path.replace(/\\/g, '/').replace(/^\/+/, '')
   if (!normalized || normalized.includes('..')) return null
   return normalized
+}
+
+async function writeRemoteFile(sftp: SFTPWrapper, remotePath: string, file: File): Promise<void> {
+  const stream = file.stream()
+  const reader = stream.getReader()
+  const remoteWriteStream = sftp.createWriteStream(remotePath)
+
+  const remoteFinished = new Promise<void>((resolve, reject) => {
+    remoteWriteStream.once('finish', () => resolve())
+    remoteWriteStream.once('error', (error: Error) => reject(error))
+  })
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    if (!remoteWriteStream.write(value)) {
+      await new Promise<void>((resolve) => remoteWriteStream.once('drain', resolve))
+    }
+  }
+
+  remoteWriteStream.end()
+  await remoteFinished
 }
 
 export async function POST(
@@ -41,52 +62,20 @@ export async function POST(
     const client = await getSSHClient(session.host, session.username, session.password)
     const sftp = await getSFTP(client)
 
-    const tmpDir = await mkdtemp(join(tmpdir(), 'craft-upload-'))
     const uploadedFiles: string[] = []
 
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        const relativePath = normalizeRelativePath(relativePaths[i] || file.name)
-        if (!relativePath) {
-          return NextResponse.json({ error: `Invalid file path: ${file.name}` }, { status: 400 })
-        }
-
-        const tmpFile = join(tmpDir, relativePath)
-        await mkdir(join(tmpDir, relativePath.substring(0, Math.max(relativePath.lastIndexOf('/'), 0))), { recursive: true })
-        const fileStream = file.stream()
-        if (!fileStream) {
-          return NextResponse.json({ error: `Cannot read file stream: ${file.name}` }, { status: 400 })
-        }
-        const writeStream = createWriteStream(tmpFile)
-        const reader = fileStream.getReader()
-        async function pump(): Promise<void> {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            if (!writeStream.write(value)) {
-              await new Promise<void>((resolve) => writeStream.once('drain', resolve))
-            }
-          }
-          writeStream.end()
-        }
-        await pump()
-        await finished(writeStream)
-
-        const remotePath = `${destPath}/${relativePath}`
-        const remoteDir = remotePath.includes('/') ? remotePath.slice(0, remotePath.lastIndexOf('/')) : destPath
-        await execCommand(client, `mkdir -p ${shellQuote(remoteDir)}`)
-        await new Promise<void>((resolve, reject) => {
-          sftp.fastPut(tmpFile, remotePath, (err) => {
-            if (err) reject(err)
-            else resolve()
-          })
-        })
-
-        uploadedFiles.push(remotePath)
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const relativePath = normalizeRelativePath(relativePaths[i] || file.name)
+      if (!relativePath) {
+        return NextResponse.json({ error: `Invalid file path: ${file.name}` }, { status: 400 })
       }
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true })
+
+      const remotePath = `${destPath}/${relativePath}`
+      const remoteDir = remotePath.includes('/') ? remotePath.slice(0, remotePath.lastIndexOf('/')) : destPath
+      await execCommand(client, `mkdir -p ${shellQuote(remoteDir)}`)
+      await writeRemoteFile(sftp, remotePath, file)
+      uploadedFiles.push(remotePath)
     }
 
     return NextResponse.json({ ok: true, uploaded: uploadedFiles })
