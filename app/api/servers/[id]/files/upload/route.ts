@@ -14,7 +14,14 @@ function normalizeRelativePath(path: string): string | null {
 }
 
 async function writeRemoteFile(sftp: SFTPWrapper, remotePath: string, file: File): Promise<void> {
-  const stream = file.stream()
+  await writeRemoteStream(sftp, remotePath, file.stream())
+}
+
+async function writeRemoteStream(
+  sftp: SFTPWrapper,
+  remotePath: string,
+  stream: ReadableStream<Uint8Array>
+): Promise<void> {
   const reader = stream.getReader()
   const remoteWriteStream = sftp.createWriteStream(remotePath)
 
@@ -36,6 +43,11 @@ async function writeRemoteFile(sftp: SFTPWrapper, remotePath: string, file: File
   await remoteFinished
 }
 
+async function validateUploadPath(destPath: string): Promise<string | null> {
+  if (!destPath || !destPath.startsWith(SERVERS_DIR + '/')) return null
+  return destPath
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -55,7 +67,7 @@ export async function POST(
       return NextResponse.json({ error: 'Missing path or files' }, { status: 400 })
     }
 
-    if (!destPath.startsWith(SERVERS_DIR + '/')) {
+    if (!(await validateUploadPath(destPath))) {
       return NextResponse.json({ error: 'Invalid destination path' }, { status: 400 })
     }
 
@@ -79,6 +91,43 @@ export async function POST(
     }
 
     return NextResponse.json({ ok: true, uploaded: uploadedFiles })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Upload failed'
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession()
+  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  await params
+
+  try {
+    const search = request.nextUrl.searchParams
+    const destPath = search.get('path') || ''
+    const relativePath = normalizeRelativePath(search.get('relativePath') || '')
+
+    if (!(await validateUploadPath(destPath)) || !relativePath) {
+      return NextResponse.json({ error: 'Invalid upload path' }, { status: 400 })
+    }
+
+    if (!request.body) {
+      return NextResponse.json({ error: 'Missing request body' }, { status: 400 })
+    }
+
+    const client = await getSSHClient(session.host, session.username, session.password)
+    const sftp = await getSFTP(client)
+
+    const remotePath = `${destPath}/${relativePath}`
+    const remoteDir = remotePath.includes('/') ? remotePath.slice(0, remotePath.lastIndexOf('/')) : destPath
+    await execCommand(client, `mkdir -p ${shellQuote(remoteDir)}`)
+    await writeRemoteStream(sftp, remotePath, request.body)
+
+    return NextResponse.json({ ok: true, uploaded: [remotePath] })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Upload failed'
     return NextResponse.json({ error: message }, { status: 500 })

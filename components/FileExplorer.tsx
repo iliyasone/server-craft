@@ -15,6 +15,42 @@ interface FileExplorerProps {
   serverId: string
 }
 
+async function uploadFileWithProgress(
+  url: string,
+  file: File,
+  onProgress: (value: number) => void
+): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url, true)
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) return
+      const progress = Math.min(100, Math.round((event.loaded / event.total) * 100))
+      onProgress(progress)
+    }
+
+    xhr.onerror = () => resolve({ ok: false, error: 'Network error during upload' })
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(100)
+        resolve({ ok: true })
+        return
+      }
+      try {
+        const payload = JSON.parse(xhr.responseText || '{}')
+        resolve({ ok: false, error: payload.error || `Upload failed (${xhr.status})` })
+      } catch {
+        resolve({ ok: false, error: `Upload failed (${xhr.status})` })
+      }
+    }
+
+    xhr.send(file)
+  })
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -49,7 +85,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   const [uploadDragging, setUploadDragging] = useState(false) // files from desktop
   const [uploading, setUploading] = useState(false)
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
-  const [uploadQueue, setUploadQueue] = useState<Array<{ id: string; name: string; status: 'pending' | 'uploading' | 'done' | 'error' }>>([])
+  const [uploadQueue, setUploadQueue] = useState<Array<{ id: string; name: string; status: 'pending' | 'uploading' | 'done' | 'error'; progress: number }>>([])
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [createFolderName, setCreateFolderName] = useState('')
   const [creatingFolderLoading, setCreatingFolderLoading] = useState(false)
@@ -181,6 +217,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
       id: `${Date.now()}-${index}-${file.name}`,
       name: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
       status: 'pending' as const,
+      progress: 0,
     }))
     setUploadQueue(queue)
 
@@ -189,30 +226,26 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         const file = files[index]
         const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
         setUploadQueue((prev) =>
-          prev.map((item, i) => (i === index ? { ...item, status: 'uploading' } : item))
+          prev.map((item, i) => (i === index ? { ...item, status: 'uploading', progress: 0 } : item))
         )
 
-        const formData = new FormData()
-        formData.append('path', currentPath)
-        formData.append('files', file)
-        formData.append('relativePaths', relativePath)
-
-        const res = await fetch(`/api/servers/${serverId}/files/upload`, {
-          method: 'POST',
-          body: formData,
+        const uploadUrl = `/api/servers/${serverId}/files/upload?path=${encodeURIComponent(currentPath)}&relativePath=${encodeURIComponent(relativePath)}`
+        const res = await uploadFileWithProgress(uploadUrl, file, (progress) => {
+          setUploadQueue((prev) =>
+            prev.map((item, i) => (i === index ? { ...item, progress } : item))
+          )
         })
 
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}))
           setUploadQueue((prev) =>
             prev.map((item, i) => (i === index ? { ...item, status: 'error' } : item))
           )
-          setError(data.error || `Upload failed for ${relativePath}`)
+          setError(res.error || `Upload failed for ${relativePath}`)
           continue
         }
 
         setUploadQueue((prev) =>
-          prev.map((item, i) => (i === index ? { ...item, status: 'done' } : item))
+          prev.map((item, i) => (i === index ? { ...item, status: 'done', progress: 100 } : item))
         )
         await fetchFiles(currentPath)
       }
@@ -674,10 +707,34 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                       <span title={item.name}>{item.name}</span>
                     </td>
                     <td style={{ padding: '7px 8px', textAlign: 'right', color: item.status === 'pending' ? '#9ca3af' : '#9cf6bc' }}>
-                      {item.status === 'pending' ? 'queued' : 'uploading…'}
+                      {item.status === 'pending' ? 'queued' : `${item.progress}%`}
                     </td>
                     <td style={{ padding: '7px 8px', textAlign: 'right', color: item.status === 'pending' ? '#9ca3af' : '#9cf6bc' }}>
-                      {item.status === 'pending' ? 'waiting' : 'in progress'}
+                      {item.status === 'pending' ? (
+                        'waiting'
+                      ) : (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            width: '70px',
+                            height: '8px',
+                            borderRadius: '999px',
+                            background: '#ffffff22',
+                            overflow: 'hidden',
+                            verticalAlign: 'middle',
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: 'block',
+                              width: `${item.progress}%`,
+                              height: '100%',
+                              background: '#22c55e',
+                              transition: 'width 120ms linear',
+                            }}
+                          />
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
