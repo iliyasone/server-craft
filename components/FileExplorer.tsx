@@ -113,7 +113,7 @@ export default function FileExplorer({ serverId, onOpenFile }: FileExplorerProps
   const createFolderInputRef = useRef<HTMLInputElement>(null)
   const createFileInputRef = useRef<HTMLInputElement>(null)
   // Drag-to-move state
-  const [draggedPath, setDraggedPath] = useState<string | null>(null)
+  const [draggedEntry, setDraggedEntry] = useState<FileEntry | null>(null)
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
@@ -123,6 +123,7 @@ export default function FileExplorer({ serverId, onOpenFile }: FileExplorerProps
   const [deleteConfirm, setDeleteConfirm] = useState<{ paths: string[]; message: string } | null>(null)
   // Track last clicked index for shift-select
   const lastClickedRef = useRef<number | null>(null)
+  const draggedPath = draggedEntry?.path ?? null
 
   const fetchFiles = useCallback(
     async (path: string) => {
@@ -212,6 +213,11 @@ export default function FileExplorer({ serverId, onOpenFile }: FileExplorerProps
     setCreateFolderName('')
     setCreatingFile(false)
     setCreateFileName('')
+  }
+
+  function clearDragState() {
+    setDraggedEntry(null)
+    setDropTargetPath(null)
   }
 
   function navigateUp() {
@@ -459,24 +465,50 @@ export default function FileExplorer({ serverId, onOpenFile }: FileExplorerProps
   }
 
   // ── Drag-to-move ─────────────────────────────────────────────────────────
-  async function handleMoveDrop(targetFolder: FileEntry) {
-    if (!draggedPath) return
-    if (draggedPath === targetFolder.path) return
-    const filename = draggedPath.split('/').pop()!
-    const newPath = `${targetFolder.path}/${filename}`
+  function getParentPath(path: string): string {
+    const separatorIndex = path.lastIndexOf('/')
+    return separatorIndex > 0 ? path.slice(0, separatorIndex) : path
+  }
+
+  function canDropInto(targetDirectoryPath: string): boolean {
+    if (!draggedEntry) return false
+    if (draggedEntry.path === targetDirectoryPath) return false
+
+    const sourceParent = getParentPath(draggedEntry.path)
+    if (sourceParent === targetDirectoryPath) return false
+
+    if (draggedEntry.isDirectory && targetDirectoryPath.startsWith(draggedEntry.path + '/')) {
+      return false
+    }
+
+    return true
+  }
+
+  async function handleMoveDrop(targetDirectoryPath: string) {
+    if (!draggedEntry || !canDropInto(targetDirectoryPath)) {
+      clearDragState()
+      return
+    }
+
+    const sourcePath = draggedEntry.path
+    const filename = sourcePath.split('/').pop()!
+    const newPath = `${targetDirectoryPath}/${filename}`
     try {
       const res = await fetch(`/api/servers/${serverId}/files`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: draggedPath, to: newPath }),
+        body: JSON.stringify({ from: sourcePath, to: newPath }),
       })
-      if (res.ok) fetchFiles(currentPath)
-      else setError('Move failed')
+      if (res.ok) {
+        await fetchFiles(currentPath)
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setError(data.error || 'Move failed')
+      }
     } catch {
       setError('Move failed')
     }
-    setDraggedPath(null)
-    setDropTargetPath(null)
+    clearDragState()
   }
 
   // ── Context menu ─────────────────────────────────────────────────────────
@@ -637,20 +669,61 @@ export default function FileExplorer({ serverId, onOpenFile }: FileExplorerProps
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '2px', fontSize: '13px', overflow: 'hidden' }}>
           <button
             onClick={() => navigateTo(basePath)}
-            style={{ background: 'none', border: 'none', color: '#fd87f6', cursor: 'pointer', padding: '2px 4px', fontSize: '13px', flexShrink: 0 }}
+            onDragOver={(e) => {
+              if (!canDropInto(basePath)) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              setDropTargetPath(basePath)
+            }}
+            onDragLeave={() => {
+              if (dropTargetPath === basePath) setDropTargetPath(null)
+            }}
+            onDrop={(e) => {
+              if (!canDropInto(basePath)) return
+              e.preventDefault()
+              e.stopPropagation()
+              void handleMoveDrop(basePath)
+            }}
+            style={{
+              background: dropTargetPath === basePath ? '#fd87f620' : 'none',
+              border: dropTargetPath === basePath ? '1px solid #fd87f680' : '1px solid transparent',
+              borderRadius: '6px',
+              color: '#fd87f6',
+              cursor: 'pointer',
+              padding: '2px 4px',
+              fontSize: '13px',
+              flexShrink: 0,
+            }}
           >
             {serverId}
           </button>
           {breadcrumbParts.map((part, idx) => {
             const partPath = basePath + '/' + breadcrumbParts.slice(0, idx + 1).join('/')
+            const isBreadcrumbDropTarget = dropTargetPath === partPath
             return (
               <span key={idx} style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: idx < breadcrumbParts.length - 1 ? 0 : 1, overflow: 'hidden' }}>
                 <span style={{ color: '#61475f' }}>/</span>
                 <button
                   onClick={() => navigateTo(partPath)}
+                  onDragOver={(e) => {
+                    if (!canDropInto(partPath)) return
+                    e.preventDefault()
+                    e.dataTransfer.dropEffect = 'move'
+                    setDropTargetPath(partPath)
+                  }}
+                  onDragLeave={() => {
+                    if (dropTargetPath === partPath) setDropTargetPath(null)
+                  }}
+                  onDrop={(e) => {
+                    if (!canDropInto(partPath)) return
+                    e.preventDefault()
+                    e.stopPropagation()
+                    void handleMoveDrop(partPath)
+                  }}
                   style={{
-                    background: 'none',
-                    border: 'none',
+                    background: isBreadcrumbDropTarget ? '#fd87f620' : 'none',
+                    border: isBreadcrumbDropTarget ? '1px solid #fd87f680' : '1px solid transparent',
+                    borderRadius: '6px',
                     color: idx === breadcrumbParts.length - 1 ? 'white' : '#fd87f6',
                     cursor: 'pointer',
                     padding: '2px 4px',
@@ -967,17 +1040,15 @@ export default function FileExplorer({ serverId, onOpenFile }: FileExplorerProps
                     draggable
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = 'move'
-                      setDraggedPath(file.path)
+                      setDraggedEntry(file)
                       setUploadDragging(false)
                     }}
-                    onDragEnd={() => {
-                      setDraggedPath(null)
-                      setDropTargetPath(null)
-                    }}
+                    onDragEnd={clearDragState}
                     onDragOver={(e) => {
-                      if (file.isDirectory && draggedPath && draggedPath !== file.path) {
+                      if (file.isDirectory && canDropInto(file.path)) {
                         e.preventDefault()
                         e.stopPropagation()
+                        e.dataTransfer.dropEffect = 'move'
                         setDropTargetPath(file.path)
                       }
                     }}
@@ -987,7 +1058,7 @@ export default function FileExplorer({ serverId, onOpenFile }: FileExplorerProps
                     onDrop={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                      if (file.isDirectory) handleMoveDrop(file)
+                      if (file.isDirectory) void handleMoveDrop(file.path)
                     }}
                     onClick={(e) => handleRowClick(file, index, e)}
                     onDoubleClick={() => handleDoubleClick(file)}

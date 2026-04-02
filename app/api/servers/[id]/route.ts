@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient, execCommand } from '@/lib/ssh'
-import { getServerRuntimeInfo, shellQuote } from '@/lib/server-terminal'
+import { getServerRuntimeInfo, getServerSessionName, shellQuote } from '@/lib/server-terminal'
 import { SERVERS_DIR } from '@/lib/servers'
 
 export async function GET(
@@ -54,12 +54,28 @@ export async function DELETE(
   try {
     const client = await getSSHClient(session.host, session.username, session.password)
 
-    // Kill tmux session if running
-    await execCommand(client, `tmux kill-session -t craft-${shellQuote(id)} 2>/dev/null || true`)
-
-    // Remove server directory
     const serverPath = `${SERVERS_DIR}/${id}`
-    await execCommand(client, `rm -rf -- ${shellQuote(serverPath)}`)
+    const sessionName = getServerSessionName(id)
+    const { stderr, code } = await execCommand(
+      client,
+      [
+        'if command -v tmux >/dev/null 2>&1; then',
+        `  tmux kill-session -t ${shellQuote(sessionName)} 2>/dev/null || true;`,
+        'fi;',
+        `target=${shellQuote(serverPath)};`,
+        'if [ -e "$target" ]; then',
+        '  rm -rf -- "$target";',
+        'fi;',
+        'if [ -e "$target" ]; then',
+        '  echo "Failed to delete server directory" >&2;',
+        '  exit 1;',
+        'fi',
+      ].join(' ')
+    )
+
+    if (code !== 0) {
+      throw new Error(stderr.trim() || 'Failed to delete server directory')
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

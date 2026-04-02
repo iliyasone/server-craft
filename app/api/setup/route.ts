@@ -1,8 +1,7 @@
-import { NextRequest } from 'next/server'
 import { getSession } from '@/lib/session'
 import { getSSHClient, execCommand } from '@/lib/ssh'
 
-export async function GET(_request: NextRequest) {
+export async function GET() {
   const session = await getSession()
   if (!session) return new Response('Unauthorized', { status: 401 })
 

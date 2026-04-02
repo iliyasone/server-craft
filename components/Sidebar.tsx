@@ -58,18 +58,40 @@ export default function Sidebar() {
 
   async function handleDeleteServer() {
     if (!deleteTarget) return
+    const target = deleteTarget
+    const isActiveServer = pathname === `/servers/${target.id}`
+    const fallbackServer = servers.find((server) => server.id !== target.id) ?? null
+
     setDeleting(true)
+    setDeleteTarget(null)
+
     try {
-      const res = await fetch(`/api/servers/${deleteTarget.id}`, { method: 'DELETE' })
-      if (res.ok) {
-        setDeleteTarget(null)
-        fetchServers()
-        // Navigate away if we're on the deleted server's page
-        if (pathname === `/servers/${deleteTarget.id}`) {
-          router.push('/dashboard')
-        }
+      setServers((prev) => prev.filter((server) => server.id !== target.id))
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('servercraft:server-deleting', {
+            detail: { serverId: target.id },
+          })
+        )
       }
-    } catch {}
+
+      if (isActiveServer && fallbackServer) {
+        router.replace(`/servers/${fallbackServer.id}`)
+      }
+
+      const res = await fetch(`/api/servers/${target.id}`, { method: 'DELETE' })
+      if (res.ok) {
+        if (isActiveServer && !fallbackServer) {
+          router.replace('/dashboard')
+        }
+        fetchServers()
+      } else {
+        fetchServers()
+      }
+    } catch {
+      fetchServers()
+    }
     finally {
       setDeleting(false)
     }

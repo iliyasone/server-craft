@@ -32,6 +32,43 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
     let reconnectDelay = 1000
     // Store handleResize so cleanup can remove the window listener
     let handleResize: (() => void) | null = null
+    let handlePointerUp: (() => void) | null = null
+    let handleKeyUp: (() => void) | null = null
+    let handleServerDeleting: ((event: Event) => void) | null = null
+    let selectionChanged = false
+    let lastCopiedSelection = ''
+
+    async function copySelectionToClipboard() {
+      if (
+        !terminal ||
+        !terminal.hasSelection() ||
+        !window.isSecureContext ||
+        !navigator.clipboard?.writeText
+      ) {
+        return
+      }
+
+      const selection = terminal.getSelection()
+      if (!selection || selection === lastCopiedSelection) return
+
+      try {
+        await navigator.clipboard.writeText(selection)
+        lastCopiedSelection = selection
+      } catch {}
+    }
+
+    async function pasteFromClipboard() {
+      if (!terminal || !window.isSecureContext || !navigator.clipboard?.readText) {
+        return
+      }
+
+      try {
+        const text = await navigator.clipboard.readText()
+        if (text) {
+          terminal.paste(text)
+        }
+      } catch {}
+    }
 
     function getWheelLineDelta(event: WheelEvent): number {
       if (!terminal) return 0
@@ -71,6 +108,19 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       if (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING) {
         current.close()
       }
+    }
+
+    function stopTerminalForDelete() {
+      disposed = true
+      if (resizeTimer) clearTimeout(resizeTimer)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (resizeObserver) resizeObserver.disconnect()
+      if (handleResize) window.removeEventListener('resize', handleResize)
+      if (handlePointerUp) window.removeEventListener('pointerup', handlePointerUp)
+      if (handleKeyUp) window.removeEventListener('keyup', handleKeyUp)
+      closeSocket()
+      terminal?.dispose()
+      terminal = null
     }
 
     async function init() {
@@ -128,6 +178,27 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         terminal.scrollLines(lineDelta)
         event.preventDefault()
         return false
+      })
+
+      terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+        if (event.type !== 'keydown') return true
+
+        const key = event.key.toLowerCase()
+        const withTerminalModifier = event.ctrlKey || event.metaKey
+
+        if (withTerminalModifier && event.shiftKey && key === 'c') {
+          event.preventDefault()
+          void copySelectionToClipboard()
+          return false
+        }
+
+        if (withTerminalModifier && event.shiftKey && key === 'v') {
+          event.preventDefault()
+          void pasteFromClipboard()
+          return false
+        }
+
+        return true
       })
 
       const connect = () => {
@@ -189,6 +260,16 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         sendMessage({ type: 'binary', data: btoa(data) })
       })
 
+      terminal.onSelectionChange(() => {
+        if (!terminal.hasSelection()) {
+          selectionChanged = false
+          lastCopiedSelection = ''
+          return
+        }
+
+        selectionChanged = true
+      })
+
       connect()
 
       // --- Resize: debounced fit + server sync over the same socket ---
@@ -209,18 +290,36 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       resizeObserver = new ResizeObserver(handleResize)
       resizeObserver.observe(container)
       window.addEventListener('resize', handleResize)
+
+      handlePointerUp = () => {
+        if (!selectionChanged) return
+        selectionChanged = false
+        void copySelectionToClipboard()
+      }
+      handleKeyUp = () => {
+        if (!selectionChanged) return
+        selectionChanged = false
+        void copySelectionToClipboard()
+      }
+
+      window.addEventListener('pointerup', handlePointerUp)
+      window.addEventListener('keyup', handleKeyUp)
+
+      handleServerDeleting = (event: Event) => {
+        const customEvent = event as CustomEvent<{ serverId?: string }>
+        if (customEvent.detail?.serverId !== serverId) return
+        stopTerminalForDelete()
+      }
+      window.addEventListener('servercraft:server-deleting', handleServerDeleting)
     }
 
     init()
 
     return () => {
-      disposed = true
-      if (resizeTimer) clearTimeout(resizeTimer)
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (resizeObserver) resizeObserver.disconnect()
-      if (handleResize) window.removeEventListener('resize', handleResize)
-      closeSocket()
-      terminal?.dispose()
+      if (handleServerDeleting) {
+        window.removeEventListener('servercraft:server-deleting', handleServerDeleting)
+      }
+      stopTerminalForDelete()
     }
   }, [serverId, wsPath])
 
@@ -242,12 +341,18 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
           background: '#1a0a1a',
           borderBottom: '1px solid #fd87f640',
           padding: '6px 12px',
-          fontSize: '12px',
           color: '#876f86',
           flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
         }}
       >
-        Terminal — {serverId}
+        <span style={{ fontSize: '12px' }}>Terminal — {serverId}</span>
+        <span style={{ fontSize: '11px', color: '#61475f', textAlign: 'right' }}>
+          Select to copy • Paste with Ctrl/Cmd+Shift+V
+        </span>
       </div>
       <div
         ref={termRef}

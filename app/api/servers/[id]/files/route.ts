@@ -148,8 +148,23 @@ export async function PATCH(
       return NextResponse.json({ error: 'Path outside allowed directory' }, { status: 400 })
     }
 
+    if (from === to) {
+      return NextResponse.json({ ok: true })
+    }
+
+    if (to.startsWith(from + '/')) {
+      return NextResponse.json({ error: 'Cannot move a folder into itself' }, { status: 400 })
+    }
+
     const client = await getSSHClient(session.host, session.username, session.password)
-    await execCommand(client, `mv -- ${shellQuote(from)} ${shellQuote(to)}`)
+    const { stderr, code } = await execCommand(client, `mv -- ${shellQuote(from)} ${shellQuote(to)}`)
+
+    if (code !== 0) {
+      return NextResponse.json(
+        { error: stderr.trim() || 'Move/rename failed' },
+        { status: 500 }
+      )
+    }
 
     return NextResponse.json({ ok: true })
   } catch (err) {

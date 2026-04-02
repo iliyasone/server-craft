@@ -148,8 +148,6 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
     }
   }
 
-  const isRunning = status === 'running'
-  const isStarting = status === 'starting'
   const isStarted = status !== 'stopped'
   const needsInstall = serverInfo?.needsInstall ?? false
 
