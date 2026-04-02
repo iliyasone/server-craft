@@ -56,7 +56,7 @@ describe('uploadRemoteStream', () => {
     )
 
     const tempPath = open.mock.calls[0]?.[0]
-    expect(tempPath).toMatch(/^\/remote\/world\/server\.jar\.part-/)
+    expect(tempPath).toMatch(/^\/remote\/world\/\.craft-upload-[^.]+\.part$/)
     expect(writes).toEqual([
       { position: 0, chunk: 'hello' },
       { position: 5, chunk: 'world' },
@@ -67,6 +67,42 @@ describe('uploadRemoteStream', () => {
       expect.anything(),
       `mv -f -- '${tempPath}' '/remote/world/server.jar'`
     )
+  })
+
+  it('uses a short temp name even when the destination filename is very long', async () => {
+    const open = vi.fn((path: string, _mode: string, callback: (err: Error | undefined, handle: Buffer) => void) => {
+      callback(undefined, Buffer.from('handle'))
+    })
+    const write = vi.fn((
+      _handle: Buffer,
+      _buffer: Buffer,
+      _offset: number,
+      length: number,
+      _position: number,
+      callback: (err?: Error) => void
+    ) => {
+      callback()
+      return length
+    })
+    const close = vi.fn((_handle: Buffer, callback: (err?: Error) => void) => callback())
+    const unlink = vi.fn((_path: string, callback: (err?: Error) => void) => callback())
+    const sftp = { open, write, close, unlink } as unknown as SFTPWrapper
+
+    vi.mocked(execCommand).mockResolvedValue({ stdout: '', stderr: '', code: 0 })
+
+    const longName = 'a'.repeat(240)
+    await uploadRemoteStream(
+      {} as Client,
+      sftp,
+      `/remote/world/${longName}.jar`,
+      createStream('hello')
+    )
+
+    const tempPath = open.mock.calls[0]?.[0] as string
+    const tempBaseName = tempPath.split('/').pop() ?? ''
+
+    expect(tempPath.startsWith('/remote/world/.craft-upload-')).toBe(true)
+    expect(Buffer.byteLength(tempBaseName)).toBeLessThanOrEqual(255)
   })
 
   it('removes the temp file when a write fails', async () => {

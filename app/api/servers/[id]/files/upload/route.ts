@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { createSSHClient, getSFTP, execCommand } from '@/lib/ssh'
 import {
-  appendRemoteStream,
-  finalizeRemoteUpload,
   uploadRemoteFile,
   uploadRemoteStream,
 } from '@/lib/remote-upload'
@@ -18,13 +16,67 @@ function normalizeRelativePath(path: string): string | null {
   return normalized
 }
 
+function normalizeUploadId(value: string): string | null {
+  return /^[a-zA-Z0-9-]+$/.test(value) ? value : null
+}
+
 async function validateUploadPath(destPath: string): Promise<string | null> {
   if (!destPath || !destPath.startsWith(SERVERS_DIR + '/')) return null
   return destPath
 }
 
-function createChunkTempPath(remotePath: string, uploadId: string): string {
-  return `${remotePath}.chunk-${uploadId}.part`
+function getRemoteDir(remotePath: string): string {
+  const lastSlashIndex = remotePath.lastIndexOf('/')
+  return lastSlashIndex >= 0 ? remotePath.slice(0, lastSlashIndex) || '/' : '.'
+}
+
+function createChunkTempDir(remotePath: string, uploadId: string): string {
+  return `${getRemoteDir(remotePath)}/.craft-upload-${uploadId}`
+}
+
+function createChunkPartPath(remotePath: string, uploadId: string, chunkIndex: number): string {
+  return `${createChunkTempDir(remotePath, uploadId)}/part-${String(chunkIndex).padStart(6, '0')}`
+}
+
+function createChunkMergedPath(remotePath: string, uploadId: string): string {
+  return `${createChunkTempDir(remotePath, uploadId)}/merged`
+}
+
+function formatUploadError(error: unknown): string {
+  if (!(error instanceof Error)) return 'Upload failed'
+
+  const code = 'code' in error && typeof error.code !== 'undefined'
+    ? ` [code ${String(error.code)}]`
+    : ''
+
+  return `${error.name}${code}: ${error.message}`
+}
+
+async function finalizeChunkedUpload(
+  client: Awaited<ReturnType<typeof createSSHClient>>,
+  remotePath: string,
+  uploadId: string,
+  totalChunks: number
+) {
+  const chunkPaths = Array.from({ length: totalChunks }, (_, index) =>
+    createChunkPartPath(remotePath, uploadId, index)
+  )
+  const tempDir = createChunkTempDir(remotePath, uploadId)
+  const mergedPath = createChunkMergedPath(remotePath, uploadId)
+  const quotedChunkPaths = chunkPaths.map((path) => shellQuote(path)).join(' ')
+
+  const { stderr, code } = await execCommand(
+    client,
+    [
+      `cat ${quotedChunkPaths} > ${shellQuote(mergedPath)}`,
+      `mv -f -- ${shellQuote(mergedPath)} ${shellQuote(remotePath)}`,
+      `rm -rf -- ${shellQuote(tempDir)}`,
+    ].join(' && ')
+  )
+
+  if (code !== 0) {
+    throw new Error(stderr.trim() || 'Failed to assemble uploaded file chunks')
+  }
 }
 
 export async function POST(
@@ -95,7 +147,7 @@ export async function PUT(
     const search = request.nextUrl.searchParams
     const destPath = search.get('path') || ''
     const relativePath = normalizeRelativePath(search.get('relativePath') || '')
-    const uploadId = search.get('uploadId') || ''
+    const uploadId = normalizeUploadId(search.get('uploadId') || '') || ''
     const chunkIndexParam = search.get('chunkIndex')
     const totalChunksParam = search.get('totalChunks')
     const chunkIndex = chunkIndexParam ? Number.parseInt(chunkIndexParam, 10) : null
@@ -123,11 +175,12 @@ export async function PUT(
         return NextResponse.json({ error: 'Invalid upload chunk metadata' }, { status: 400 })
       }
 
-      const tempPath = createChunkTempPath(remotePath, uploadId)
-      await appendRemoteStream(sftp, tempPath, request.body)
+      await execCommand(client, `mkdir -p ${shellQuote(createChunkTempDir(remotePath, uploadId))}`)
+      const chunkPath = createChunkPartPath(remotePath, uploadId, chunkIndex)
+      await uploadRemoteStream(client, sftp, chunkPath, request.body)
 
       if (chunkIndex === totalChunks - 1) {
-        await finalizeRemoteUpload(client, tempPath, remotePath)
+        await finalizeChunkedUpload(client, remotePath, uploadId, totalChunks)
       }
 
       return NextResponse.json({
@@ -141,7 +194,7 @@ export async function PUT(
 
     return NextResponse.json({ ok: true, uploaded: [remotePath] })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Upload failed'
+    const message = formatUploadError(err)
     return NextResponse.json({ error: message }, { status: 500 })
   } finally {
     client?.end()

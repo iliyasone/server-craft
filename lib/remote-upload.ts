@@ -2,8 +2,14 @@ import type { Client, SFTPWrapper } from 'ssh2'
 import { execCommand } from '@/lib/ssh'
 import { shellQuote } from '@/lib/server-terminal'
 
+function getRemoteDir(remotePath: string): string {
+  const lastSlashIndex = remotePath.lastIndexOf('/')
+  return lastSlashIndex >= 0 ? remotePath.slice(0, lastSlashIndex) || '/' : '.'
+}
+
 function createTempRemotePath(remotePath: string): string {
-  return `${remotePath}.part-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const remoteDir = getRemoteDir(remotePath)
+  return `${remoteDir}/.craft-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.part`
 }
 
 function toBuffer(chunk: Uint8Array): Buffer {
@@ -15,7 +21,7 @@ function toBuffer(chunk: Uint8Array): Buffer {
 function openRemoteFile(
   sftp: SFTPWrapper,
   remotePath: string,
-  mode: 'w' | 'a' = 'w'
+  mode: 'w' | 'a' | 'r+' = 'w'
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     sftp.open(remotePath, mode, (err, handle) => {
@@ -65,7 +71,8 @@ function statRemoteFile(
     sftp.stat(remotePath, (err, stats) => {
       if (err) {
         const message = err.message || ''
-        if (message.includes('No such file') || message.includes('ENOENT')) {
+        const code = 'code' in err ? err.code : undefined
+        if (code === 2 || message.includes('No such file') || message.includes('ENOENT')) {
           resolve(null)
           return
         }
@@ -156,7 +163,7 @@ export async function appendRemoteStream(
   let position = existing?.size ?? 0
 
   try {
-    handle = await openRemoteFile(sftp, remotePath, existing ? 'a' : 'w')
+    handle = await openRemoteFile(sftp, remotePath, existing ? 'r+' : 'w')
 
     while (true) {
       const { done, value } = await reader.read()

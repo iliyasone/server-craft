@@ -42,7 +42,13 @@ function uploadBlobWithProgress(
         const payload = JSON.parse(xhr.responseText || '{}')
         resolve({ ok: false, error: payload.error || `Upload failed (${xhr.status})` })
       } catch {
-        resolve({ ok: false, error: `Upload failed (${xhr.status})` })
+        const rawBody = xhr.responseText?.trim()
+        resolve({
+          ok: false,
+          error: rawBody
+            ? `Upload failed (${xhr.status}): ${rawBody}`
+            : `Upload failed (${xhr.status})`,
+        })
       }
     }
 
@@ -81,7 +87,10 @@ export async function uploadFileWithProgress(
     })
 
     if (!result.ok) {
-      return result
+      return {
+        ok: false,
+        error: `Chunk ${chunkIndex + 1}/${totalChunks} failed: ${result.error || 'Unknown upload error'}`,
+      }
     }
   }
 
