@@ -3,8 +3,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import FileExplorer from '@/components/FileExplorer'
+import FileEditor from '@/components/FileEditor'
 import NotionTimer from '@/components/NotionTimer'
-import NewServerModal from '@/components/NewServerModal'
 
 const ServerTerminal = dynamic(() => import('@/components/ServerTerminal'), {
   ssr: false,
@@ -54,9 +54,11 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   const [uptime, setUptime] = useState<string | null>(null)
   const [notionStatus, setNotionStatus] = useState<NotionStatusData | null>(null)
   const [notionError, setNotionError] = useState<string | null>(null)
-  const [showNewServer, setShowNewServer] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null)
+  const [startHover, setStartHover] = useState(false)
+  // File editor state
+  const [editingFile, setEditingFile] = useState<{ path: string; name: string } | null>(null)
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -112,7 +114,6 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
     try {
       const res = await fetch(`/api/servers/${id}/install`, { method: 'POST' })
       if (res.ok) {
-        // Re-fetch info after install starts (it runs in terminal, takes time)
         setTimeout(fetchServerInfo, 3000)
       }
     } finally {
@@ -151,9 +152,6 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   const isStarting = status === 'starting'
   const isStarted = status !== 'stopped'
   const needsInstall = serverInfo?.needsInstall ?? false
-  const statusLabel = isRunning ? 'Running' : isStarting ? 'Starting' : 'Stopped'
-  const statusColor = isRunning ? '#22c55e' : isStarting ? '#f59e0b' : '#6b7280'
-  const statusBackground = isRunning ? '#14532d40' : isStarting ? '#78350f40' : '#3f3f4640'
 
   return (
     <div
@@ -199,50 +197,11 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
           </span>
         )}
 
-        {/* Status badge */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '5px',
-            background: statusBackground,
-            border: `1px solid ${statusColor}`,
-            borderRadius: '20px',
-            padding: '3px 10px',
-            fontSize: '12px',
-          }}
-        >
-          <div
-            style={{
-              width: '7px',
-              height: '7px',
-              borderRadius: '50%',
-              background: statusColor,
-            }}
-          />
-          {statusLabel}
-        </div>
-
         {uptime && isStarted && (
           <span style={{ color: '#876f86', fontSize: '12px' }}>up {uptime}</span>
         )}
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <button
-            onClick={() => setShowNewServer(true)}
-            style={{
-              background: 'transparent',
-              border: '1px solid #fd87f6',
-              color: '#fd87f6',
-              padding: '5px 14px',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontSize: '13px',
-            }}
-          >
-            + New
-          </button>
-
           {isStarted ? (
             <button
               onClick={handleStop}
@@ -284,24 +243,62 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
                   {actionLoading ? '…' : 'Install'}
                 </button>
               )}
-              <button
-                onClick={handleStart}
-                disabled={actionLoading || notionBlocked}
-                title={notionBlocked ? 'Blocked: no recent workout logged' : (serverInfo?.startCommand ?? 'Start server')}
-                style={{
-                  background: notionBlocked ? '#374151' : '#22c55e',
-                  color: 'white',
-                  border: 'none',
-                  padding: '7px 18px',
-                  borderRadius: '8px',
-                  cursor: actionLoading || notionBlocked ? 'not-allowed' : 'pointer',
-                  fontWeight: '700',
-                  fontSize: '14px',
-                  opacity: actionLoading ? 0.7 : 1,
-                }}
+              <div
+                style={{ position: 'relative' }}
+                onMouseEnter={() => setStartHover(true)}
+                onMouseLeave={() => setStartHover(false)}
               >
-                {actionLoading ? '…' : notionBlocked ? '🔒 Start' : 'Start'}
-              </button>
+                <button
+                  onClick={handleStart}
+                  disabled={actionLoading || notionBlocked}
+                  style={{
+                    background: notionBlocked ? '#374151' : '#22c55e',
+                    color: 'white',
+                    border: 'none',
+                    padding: '7px 18px',
+                    borderRadius: '8px',
+                    cursor: actionLoading || notionBlocked ? 'not-allowed' : 'pointer',
+                    fontWeight: '700',
+                    fontSize: '14px',
+                    opacity: actionLoading ? 0.7 : 1,
+                  }}
+                >
+                  {actionLoading ? '…' : notionBlocked ? '🔒 Start' : 'Start'}
+                </button>
+                {/* Start command tooltip */}
+                {startHover && serverInfo && !needsInstall && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 'calc(100% + 8px)',
+                      right: 0,
+                      background: '#0d0d0d',
+                      border: '1px solid #22c55e40',
+                      borderRadius: '8px',
+                      padding: '10px 14px',
+                      minWidth: '280px',
+                      maxWidth: '450px',
+                      zIndex: 50,
+                      boxShadow: '0 8px 24px #00000066',
+                    }}
+                  >
+                    <div style={{ fontSize: '11px', color: '#86efac', marginBottom: '6px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Start command
+                    </div>
+                    <code
+                      style={{
+                        fontSize: '12px',
+                        fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+                        color: '#e2e8f0',
+                        wordBreak: 'break-all',
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {serverInfo.startCommand}
+                    </code>
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -334,37 +331,6 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
             }}
           >
             {serverInfo.installCommand}
-          </code>
-        </div>
-      )}
-
-      {/* Start command preview */}
-      {serverInfo && !needsInstall && !isStarted && (
-        <div
-          style={{
-            background: '#22c55e10',
-            borderBottom: '1px solid #22c55e30',
-            padding: '8px 20px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
-            fontSize: '13px',
-            color: '#86efac',
-            flexShrink: 0,
-          }}
-        >
-          <span style={{ fontWeight: 600 }}>Start command:</span>
-          <code
-            style={{
-              background: '#0d0d0d',
-              padding: '2px 8px',
-              borderRadius: '4px',
-              fontSize: '12px',
-              fontFamily: 'monospace',
-              color: '#e2e8f0',
-            }}
-          >
-            {serverInfo.startCommand}
           </code>
         </div>
       )}
@@ -409,9 +375,19 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
 
       {/* Main content: Terminal + File Explorer */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0 }}>
-        {/* Terminal (60%) */}
+        {/* Terminal / Editor (60%) */}
         <div style={{ flex: '0 0 60%', display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0, minWidth: 0 }}>
-          <ServerTerminal key={id} serverId={id} />
+          {editingFile ? (
+            <FileEditor
+              key={editingFile.path}
+              serverId={id}
+              filePath={editingFile.path}
+              fileName={editingFile.name}
+              onClose={() => setEditingFile(null)}
+            />
+          ) : (
+            <ServerTerminal key={id} serverId={id} />
+          )}
         </div>
 
         {/* File Explorer (40%) */}
@@ -426,13 +402,13 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
             minWidth: 0,
           }}
         >
-          <FileExplorer key={id} serverId={id} />
+          <FileExplorer
+            key={id}
+            serverId={id}
+            onOpenFile={(path, name) => setEditingFile({ path, name })}
+          />
         </div>
       </div>
-
-      {showNewServer && (
-        <NewServerModal onClose={() => setShowNewServer(false)} />
-      )}
     </div>
   )
 }

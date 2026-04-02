@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef, DragEvent } from 'react'
 import { SERVERS_DIR_CLIENT } from '@/lib/client-constants'
+import ContextMenu, { ContextMenuItem } from './ContextMenu'
+import { ConfirmDialog } from './ConfirmDialog'
 
 interface FileEntry {
   name: string
@@ -13,6 +15,7 @@ interface FileEntry {
 
 interface FileExplorerProps {
   serverId: string
+  onOpenFile?: (path: string, name: string) => void
 }
 
 async function uploadFileWithProgress(
@@ -75,31 +78,51 @@ function fileIcon(file: FileEntry): string {
   return '📄'
 }
 
-export default function FileExplorer({ serverId }: FileExplorerProps) {
+const EDITABLE_EXTENSIONS = new Set([
+  'json', 'yml', 'yaml', 'toml', 'properties', 'conf', 'cfg', 'txt', 'md',
+  'sh', 'bash', 'xml', 'html', 'js', 'ts', 'py', 'ini', 'log', 'csv',
+  'env', 'gitignore', 'dockerfile',
+])
+
+function isEditable(name: string): boolean {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  const baseName = name.toLowerCase()
+  return EDITABLE_EXTENSIONS.has(ext) || ['eula.txt', 'server.properties', 'dockerfile', '.env', '.gitignore'].includes(baseName)
+}
+
+export default function FileExplorer({ serverId, onOpenFile }: FileExplorerProps) {
   const basePath = `${SERVERS_DIR_CLIENT}/${serverId}`
   const [currentPath, setCurrentPath] = useState(basePath)
   const [files, setFiles] = useState<FileEntry[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [uploadDragging, setUploadDragging] = useState(false) // files from desktop
+  const [uploadDragging, setUploadDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
   const [uploadQueue, setUploadQueue] = useState<Array<{ id: string; name: string; status: 'pending' | 'uploading' | 'done' | 'error'; progress: number }>>([])
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [createFolderName, setCreateFolderName] = useState('')
   const [creatingFolderLoading, setCreatingFolderLoading] = useState(false)
+  const [creatingFile, setCreatingFile] = useState(false)
+  const [createFileName, setCreateFileName] = useState('')
+  const [creatingFileLoading, setCreatingFileLoading] = useState(false)
   // Rename state
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const renameInputRef = useRef<HTMLInputElement>(null)
   const createFolderInputRef = useRef<HTMLInputElement>(null)
+  const createFileInputRef = useRef<HTMLInputElement>(null)
   // Drag-to-move state
   const [draggedPath, setDraggedPath] = useState<string | null>(null)
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
-  const uploadMenuRef = useRef<HTMLDivElement>(null)
+  // Context menu
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file?: FileEntry } | null>(null)
+  // Delete confirmation
+  const [deleteConfirm, setDeleteConfirm] = useState<{ paths: string[]; message: string } | null>(null)
+  // Track last clicked index for shift-select
+  const lastClickedRef = useRef<number | null>(null)
 
   const fetchFiles = useCallback(
     async (path: string) => {
@@ -133,6 +156,8 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     setRenameValue('')
     setCreatingFolder(false)
     setCreateFolderName('')
+    setCreatingFile(false)
+    setCreateFileName('')
     setError(null)
   }, [basePath])
 
@@ -140,27 +165,43 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     fetchFiles(currentPath)
   }, [currentPath, fetchFiles])
 
-  useEffect(() => {
-    function onClickOutside(event: MouseEvent) {
-      if (!uploadMenuRef.current?.contains(event.target as Node)) {
-        setUploadMenuOpen(false)
-      }
-    }
-    if (uploadMenuOpen) {
-      document.addEventListener('mousedown', onClickOutside)
-    }
-    return () => document.removeEventListener('mousedown', onClickOutside)
-  }, [uploadMenuOpen])
+  // ── Selection (shift-click) ──────────────────────────────────────────────
+  function handleRowClick(file: FileEntry, index: number, e: React.MouseEvent) {
+    if (renamingPath === file.path) return
 
-  // ── Selection ────────────────────────────────────────────────────────────
-  function toggleSelect(path: string, e: React.MouseEvent) {
-    e.stopPropagation()
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
+    if (e.shiftKey && lastClickedRef.current !== null) {
+      // Range select
+      const start = Math.min(lastClickedRef.current, index)
+      const end = Math.max(lastClickedRef.current, index)
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (let i = start; i <= end; i++) {
+          next.add(files[i].path)
+        }
+        return next
+      })
+    } else if (e.ctrlKey || e.metaKey) {
+      // Toggle single
+      setSelected((prev) => {
+        const next = new Set(prev)
+        if (next.has(file.path)) next.delete(file.path)
+        else next.add(file.path)
+        return next
+      })
+      lastClickedRef.current = index
+    } else {
+      // Single click — just select this one (don't navigate)
+      setSelected(new Set([file.path]))
+      lastClickedRef.current = index
+    }
+  }
+
+  function handleDoubleClick(file: FileEntry) {
+    if (file.isDirectory) {
+      navigateTo(file.path)
+    } else if (isEditable(file.name) && onOpenFile) {
+      onOpenFile(file.path, file.name)
+    }
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────
@@ -169,6 +210,8 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     setRenamingPath(null)
     setCreatingFolder(false)
     setCreateFolderName('')
+    setCreatingFile(false)
+    setCreateFileName('')
   }
 
   function navigateUp() {
@@ -180,28 +223,40 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   }
 
   // ── Delete ───────────────────────────────────────────────────────────────
-  async function handleDelete() {
-    if (selected.size === 0) return
-    if (!confirm(`Delete ${selected.size} item(s)? This cannot be undone.`)) return
+  function requestDelete(paths: string[]) {
+    if (paths.length === 0) return
+    const names = paths.map((p) => p.split('/').pop()!)
+    const message = paths.length === 1
+      ? `Delete "${names[0]}"? This cannot be undone.`
+      : `Delete ${paths.length} items? This cannot be undone.`
+    setDeleteConfirm({ paths, message })
+  }
+
+  async function executeDelete(paths: string[]) {
     try {
       const res = await fetch(`/api/servers/${serverId}/files`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths: Array.from(selected) }),
+        body: JSON.stringify({ paths }),
       })
-      if (res.ok) fetchFiles(currentPath)
-      else setError('Delete failed')
+      if (res.ok) {
+        setSelected(new Set())
+        fetchFiles(currentPath)
+      } else {
+        setError('Delete failed')
+      }
     } catch {
       setError('Delete failed')
     }
+    setDeleteConfirm(null)
   }
 
   // ── Download ─────────────────────────────────────────────────────────────
-  function handleDownload() {
-    if (selected.size === 0) return
-    const paths = Array.from(selected).join(',')
+  function handleDownload(paths?: string[]) {
+    const downloadPaths = paths || Array.from(selected)
+    if (downloadPaths.length === 0) return
     window.open(
-      `/api/servers/${serverId}/files/download?paths=${encodeURIComponent(paths)}`,
+      `/api/servers/${serverId}/files/download?paths=${encodeURIComponent(downloadPaths.join(','))}`,
       '_blank'
     )
   }
@@ -268,7 +323,6 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
   function handleDrop(e: DragEvent) {
     e.preventDefault()
     setUploadDragging(false)
-    // Only handle desktop file drops (not internal drag-to-move)
     if (e.dataTransfer.files.length && !draggedPath) {
       uploadFiles(e.dataTransfer.files)
     }
@@ -276,17 +330,15 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault()
-    // Only show upload overlay when dragging from desktop (not internal)
     if (!draggedPath) setUploadDragging(true)
   }
 
   // ── Create folder ────────────────────────────────────────────────────────
   function openCreateFolder() {
     setCreatingFolder(true)
+    setCreatingFile(false)
     setCreateFolderName('')
-    setTimeout(() => {
-      createFolderInputRef.current?.focus()
-    }, 30)
+    setTimeout(() => createFolderInputRef.current?.focus(), 30)
   }
 
   function cancelCreateFolder() {
@@ -324,9 +376,55 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     }
   }
 
+  // ── Create file ──────────────────────────────────────────────────────────
+  function openCreateFile() {
+    setCreatingFile(true)
+    setCreatingFolder(false)
+    setCreateFileName('')
+    setTimeout(() => createFileInputRef.current?.focus(), 30)
+  }
+
+  function cancelCreateFile() {
+    setCreatingFile(false)
+    setCreateFileName('')
+  }
+
+  async function submitCreateFile() {
+    const fileName = createFileName.trim()
+    if (!fileName) return cancelCreateFile()
+
+    if (fileName.includes('/')) {
+      setError('File name cannot contain "/"')
+      return
+    }
+
+    setCreatingFileLoading(true)
+    try {
+      const filePath = `${currentPath}/${fileName}`
+      const res = await fetch(`/api/servers/${serverId}/files/content`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filePath, content: '' }),
+      })
+      if (res.ok) {
+        cancelCreateFile()
+        fetchFiles(currentPath)
+        if (isEditable(fileName) && onOpenFile) {
+          onOpenFile(filePath, fileName)
+        }
+      } else {
+        const data = await res.json()
+        setError(data.error || 'Create file failed')
+      }
+    } catch {
+      setError('Create file failed')
+    } finally {
+      setCreatingFileLoading(false)
+    }
+  }
+
   // ── Rename ───────────────────────────────────────────────────────────────
-  function startRename(file: FileEntry, e: React.MouseEvent) {
-    e.stopPropagation()
+  function startRename(file: FileEntry) {
     setRenamingPath(file.path)
     setRenameValue(file.name)
     setTimeout(() => {
@@ -381,6 +479,40 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
     setDropTargetPath(null)
   }
 
+  // ── Context menu ─────────────────────────────────────────────────────────
+  function handleContextMenu(e: React.MouseEvent, file?: FileEntry) {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenu({ x: e.clientX, y: e.clientY, file })
+  }
+
+  function getContextMenuItems(): ContextMenuItem[] {
+    const file = contextMenu?.file
+    if (file) {
+      // File-specific context menu
+      const items: ContextMenuItem[] = []
+      if (file.isDirectory) {
+        items.push({ label: 'Open', icon: '📂', onClick: () => navigateTo(file.path) })
+      } else if (isEditable(file.name) && onOpenFile) {
+        items.push({ label: 'Edit', icon: '✎', onClick: () => onOpenFile(file.path, file.name) })
+      }
+      items.push(
+        { label: 'Rename', icon: '✏️', onClick: () => startRename(file) },
+        { label: 'Download', icon: '↓', onClick: () => handleDownload([file.path]) },
+        { label: 'Delete', icon: '🗑', danger: true, onClick: () => requestDelete([file.path]) },
+      )
+      return items
+    }
+
+    // Empty space context menu
+    return [
+      { label: 'New file', icon: '📄', onClick: openCreateFile },
+      { label: 'New folder', icon: '📁', onClick: openCreateFolder },
+      { label: 'Upload files', icon: '↑', onClick: () => fileInputRef.current?.click() },
+      { label: 'Upload folder', icon: '📂', onClick: () => folderInputRef.current?.click() },
+    ]
+  }
+
   // ── Breadcrumbs ──────────────────────────────────────────────────────────
   const relativePath = currentPath.replace(basePath, '') || '/'
   const breadcrumbParts = relativePath.split('/').filter(Boolean)
@@ -403,6 +535,11 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         if (!e.currentTarget.contains(e.relatedTarget as Node)) {
           setUploadDragging(false)
         }
+      }}
+      onContextMenu={(e) => {
+        // Only show if right-clicking empty space (not on a file row)
+        if ((e.target as HTMLElement).closest('[data-file-row]')) return
+        handleContextMenu(e)
       }}
     >
       {/* Upload drop overlay */}
@@ -428,6 +565,61 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
           Drop to upload
         </div>
       )}
+
+      {/* Upload area */}
+      <div
+        style={{
+          display: 'flex',
+          flexShrink: 0,
+          borderBottom: '1px solid #fd87f620',
+        }}
+      >
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            padding: '14px 12px',
+            background: '#1a0a1a',
+            border: 'none',
+            borderRight: '1px solid #fd87f620',
+            color: uploading ? '#61475f' : '#876f86',
+            cursor: uploading ? 'not-allowed' : 'pointer',
+            fontSize: '13px',
+          }}
+          onMouseEnter={(e) => { if (!uploading) e.currentTarget.style.background = '#fd87f610' }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = '#1a0a1a' }}
+        >
+          <span style={{ fontSize: '18px' }}>↑</span>
+          Upload Files
+        </button>
+        <button
+          onClick={() => folderInputRef.current?.click()}
+          disabled={uploading}
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            padding: '14px 12px',
+            background: '#1a0a1a',
+            border: 'none',
+            color: uploading ? '#61475f' : '#876f86',
+            cursor: uploading ? 'not-allowed' : 'pointer',
+            fontSize: '13px',
+          }}
+          onMouseEnter={(e) => { if (!uploading) e.currentTarget.style.background = '#fd87f610' }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = '#1a0a1a' }}
+        >
+          <span style={{ fontSize: '18px' }}>📂</span>
+          Upload Folder
+        </button>
+      </div>
 
       {/* Toolbar */}
       <div
@@ -476,71 +668,21 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
           })}
         </div>
 
-        {/* Action icons */}
+        {/* Selection actions */}
         {hasSelection && (
           <>
             <span style={{ color: '#876f86', fontSize: '12px', marginRight: '2px' }}>
               {selected.size} selected
             </span>
-            <IconBtn title="Download selected" onClick={handleDownload}>↓</IconBtn>
-            <IconBtn title="Delete selected" onClick={handleDelete} danger>🗑</IconBtn>
+            <IconBtn title="Download selected" onClick={() => handleDownload()}>↓</IconBtn>
+            <IconBtn title="Delete selected" onClick={() => requestDelete(Array.from(selected))} danger>🗑</IconBtn>
             <div style={{ width: '1px', background: '#61475f40', height: '16px', margin: '0 2px' }} />
           </>
-        )}
-        <div ref={uploadMenuRef} style={{ position: 'relative' }}>
-          <IconBtn
-            title="Upload files or folder"
-            onClick={() => setUploadMenuOpen((v) => !v)}
-            loading={uploading}
-            wide
-          >
-            {uploading ? '…' : 'Upload'}
-          </IconBtn>
-          {uploadMenuOpen && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 'calc(100% + 6px)',
-                right: 0,
-                minWidth: '180px',
-                background: '#1a0a1a',
-                border: '1px solid #61475f70',
-                borderRadius: '8px',
-                boxShadow: '0 8px 20px #00000055',
-                zIndex: 25,
-                padding: '6px',
-              }}
-            >
-              <button
-                onClick={() => {
-                  setUploadMenuOpen(false)
-                  fileInputRef.current?.click()
-                }}
-                style={uploadMenuItemStyle}
-              >
-                Upload files…
-              </button>
-              <button
-                onClick={() => {
-                  setUploadMenuOpen(false)
-                  folderInputRef.current?.click()
-                }}
-                style={uploadMenuItemStyle}
-              >
-                Upload folder…
-              </button>
-            </div>
-          )}
-        </div>
-        <IconBtn title="Create folder" onClick={openCreateFolder} loading={creatingFolderLoading}>
-          +
-        </IconBtn>
-        {currentPath !== basePath && (
-          <IconBtn title="Go up" onClick={navigateUp}>⬆</IconBtn>
         )}
         <IconBtn title="Refresh" onClick={() => fetchFiles(currentPath)}>↻</IconBtn>
       </div>
 
+      {/* Create folder inline */}
       {creatingFolder && (
         <div
           style={{
@@ -594,6 +736,75 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
           </button>
           <button
             onClick={cancelCreateFolder}
+            style={{
+              background: 'transparent',
+              color: '#876f86',
+              border: '1px solid #61475f50',
+              borderRadius: '6px',
+              padding: '6px 10px',
+              fontSize: '12px',
+              cursor: 'pointer',
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Create file inline */}
+      {creatingFile && (
+        <div
+          style={{
+            padding: '8px 12px',
+            borderBottom: '1px solid #fd87f620',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: '#140714',
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ color: '#876f86', fontSize: '12px', whiteSpace: 'nowrap' }}>
+            New file
+          </span>
+          <input
+            ref={createFileInputRef}
+            value={createFileName}
+            onChange={(e) => setCreateFileName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submitCreateFile()
+              if (e.key === 'Escape') cancelCreateFile()
+            }}
+            placeholder="filename.txt"
+            style={{
+              flex: 1,
+              background: '#3d1f3b',
+              border: '1px solid #61475f',
+              borderRadius: '6px',
+              color: 'white',
+              padding: '6px 10px',
+              fontSize: '13px',
+              outline: 'none',
+            }}
+          />
+          <button
+            onClick={submitCreateFile}
+            disabled={creatingFileLoading}
+            style={{
+              background: '#22c55e',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '6px 10px',
+              fontSize: '12px',
+              cursor: creatingFileLoading ? 'not-allowed' : 'pointer',
+              opacity: creatingFileLoading ? 0.7 : 1,
+            }}
+          >
+            {creatingFileLoading ? '…' : 'Create'}
+          </button>
+          <button
+            onClick={cancelCreateFile}
             style={{
               background: 'transparent',
               color: '#876f86',
@@ -668,12 +879,11 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
               {/* Up directory row */}
               {currentPath !== basePath && (
                 <tr
-                  onClick={navigateUp}
+                  onDoubleClick={navigateUp}
                   style={{ cursor: 'pointer', borderBottom: '1px solid #ffffff08' }}
                   className="file-row"
                 >
-                  <td style={{ padding: '7px 12px', width: '24px' }} />
-                  <td style={{ padding: '7px 8px', color: '#61475f' }}>
+                  <td style={{ padding: '7px 12px', color: '#61475f' }}>
                     <span style={{ marginRight: '6px' }}>📁</span>
                     <span style={{ fontFamily: 'monospace' }}>..</span>
                   </td>
@@ -681,9 +891,9 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                 </tr>
               )}
 
-              {files.length === 0 && (
+              {files.length === 0 && !currentPath.endsWith(basePath) && (
                 <tr>
-                  <td colSpan={4} style={{ padding: '32px', color: '#61475f', textAlign: 'center', fontSize: '14px' }}>
+                  <td colSpan={3} style={{ padding: '32px', color: '#61475f', textAlign: 'center', fontSize: '14px' }}>
                     Empty directory
                   </td>
                 </tr>
@@ -699,8 +909,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                       background: item.status === 'pending' ? '#ffffff06' : '#22c55e0f',
                     }}
                   >
-                    <td style={{ padding: '7px 12px', width: '24px' }} />
-                    <td style={{ padding: '7px 8px', color: '#d3fadf' }}>
+                    <td style={{ padding: '7px 12px', color: '#d3fadf' }}>
                       <span
                         style={{
                           display: 'inline-block',
@@ -713,10 +922,10 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                       />
                       <span title={item.name}>{item.name}</span>
                     </td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', color: item.status === 'pending' ? '#9ca3af' : '#9cf6bc' }}>
+                    <td style={{ padding: '7px 8px', textAlign: 'right', color: item.status === 'pending' ? '#9ca3af' : '#9cf6bc', width: '70px' }}>
                       {item.status === 'pending' ? 'queued' : `${item.progress}%`}
                     </td>
-                    <td style={{ padding: '7px 8px', textAlign: 'right', color: item.status === 'pending' ? '#9ca3af' : '#9cf6bc' }}>
+                    <td style={{ padding: '7px 8px', textAlign: 'right', color: item.status === 'pending' ? '#9ca3af' : '#9cf6bc', width: '80px' }}>
                       {item.status === 'pending' ? (
                         'waiting'
                       ) : (
@@ -746,7 +955,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                   </tr>
                 ))}
 
-              {files.map((file) => {
+              {files.map((file, index) => {
                 const isSelected = selected.has(file.path)
                 const isRenaming = renamingPath === file.path
                 const isDropTarget = dropTargetPath === file.path
@@ -754,6 +963,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                 return (
                   <tr
                     key={file.path}
+                    data-file-row
                     draggable
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = 'move'
@@ -779,15 +989,9 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                       e.stopPropagation()
                       if (file.isDirectory) handleMoveDrop(file)
                     }}
-                    onClick={(e) => {
-                      if (isRenaming) return
-                      if (file.isDirectory) {
-                        navigateTo(file.path)
-                      } else {
-                        // Click to toggle select
-                        toggleSelect(file.path, e)
-                      }
-                    }}
+                    onClick={(e) => handleRowClick(file, index, e)}
+                    onDoubleClick={() => handleDoubleClick(file)}
+                    onContextMenu={(e) => handleContextMenu(e, file)}
                     style={{
                       background: isDropTarget
                         ? '#fd87f625'
@@ -797,35 +1001,13 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                         ? '#ffffff08'
                         : 'transparent',
                       borderBottom: '1px solid #ffffff08',
-                      cursor: file.isDirectory ? 'pointer' : 'default',
+                      cursor: 'default',
                       opacity: draggedPath === file.path ? 0.5 : 1,
                       outline: isDropTarget ? '1px solid #fd87f640' : 'none',
                     }}
                   >
-                    {/* Checkbox */}
-                    <td
-                      style={{ padding: '7px 12px', width: '24px', verticalAlign: 'middle' }}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        toggleSelect(file.path, e)
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => {}}
-                        style={{ cursor: 'pointer', accentColor: '#fd87f6' }}
-                      />
-                    </td>
-
                     {/* Name */}
-                    <td
-                      style={{ padding: '7px 8px', verticalAlign: 'middle', maxWidth: '160px' }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation()
-                        if (!isRenaming) startRename(file, e)
-                      }}
-                    >
+                    <td style={{ padding: '7px 12px', verticalAlign: 'middle' }}>
                       <span style={{ marginRight: '6px', userSelect: 'none' }}>
                         {fileIcon(file)}
                       </span>
@@ -848,7 +1030,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                             padding: '2px 6px',
                             fontSize: '13px',
                             outline: 'none',
-                            width: '140px',
+                            width: '200px',
                           }}
                         />
                       ) : (
@@ -859,7 +1041,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
                             display: 'inline-block',
-                            maxWidth: '140px',
+                            maxWidth: 'calc(100% - 30px)',
                             verticalAlign: 'bottom',
                           }}
                           title={file.name}
@@ -884,53 +1066,18 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
                       {file.isDirectory ? '' : formatSize(file.size)}
                     </td>
 
-                    {/* Actions + Date */}
+                    {/* Date */}
                     <td
                       style={{
                         padding: '7px 8px',
                         textAlign: 'right',
                         color: '#61475f',
                         whiteSpace: 'nowrap',
-                        width: '100px',
+                        width: '70px',
                         verticalAlign: 'middle',
                       }}
                     >
-                      <span className="file-actions" style={{ display: 'inline-flex', gap: '4px', opacity: 0 }}>
-                        <span
-                          title="Rename (or double-click)"
-                          onClick={(e) => startRename(file, e)}
-                          style={{ cursor: 'pointer', padding: '1px 4px', borderRadius: '3px', background: '#fd87f620', fontSize: '11px' }}
-                        >
-                          ✎
-                        </span>
-                        <span
-                          title="Download"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            window.open(`/api/servers/${serverId}/files/download?paths=${encodeURIComponent(file.path)}`, '_blank')
-                          }}
-                          style={{ cursor: 'pointer', padding: '1px 4px', borderRadius: '3px', background: '#22c55e20', fontSize: '11px' }}
-                        >
-                          ↓
-                        </span>
-                        <span
-                          title="Delete"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            if (confirm(`Delete "${file.name}"?`)) {
-                              fetch(`/api/servers/${serverId}/files`, {
-                                method: 'DELETE',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ paths: [file.path] }),
-                              }).then(() => fetchFiles(currentPath))
-                            }
-                          }}
-                          style={{ cursor: 'pointer', padding: '1px 4px', borderRadius: '3px', background: '#dc262620', fontSize: '11px' }}
-                        >
-                          🗑
-                        </span>
-                      </span>
-                      <span style={{ marginLeft: '4px' }}>{formatDate(file.mtime)}</span>
+                      {formatDate(file.mtime)}
                     </td>
                   </tr>
                 )
@@ -940,14 +1087,7 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         )}
       </div>
 
-      {/* Hint */}
-      {!loading && files.length > 0 && (
-        <div style={{ padding: '6px 12px', fontSize: '11px', color: '#3d1f3b', borderTop: '1px solid #ffffff08', flexShrink: 0 }}>
-          Create folders from the toolbar · Double-click to rename · Drag files to a folder to move · Drop files from desktop to upload
-        </div>
-      )}
-
-      {/* Hidden file input */}
+      {/* Hidden file inputs */}
       <input
         ref={fileInputRef}
         type="file"
@@ -974,34 +1114,31 @@ export default function FileExplorer({ serverId }: FileExplorerProps) {
         }}
       />
 
+      {/* Context menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={getContextMenuItems()}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* Delete confirmation dialog */}
+      {deleteConfirm && (
+        <ConfirmDialog
+          title="Delete"
+          message={deleteConfirm.message}
+          onConfirm={() => executeDelete(deleteConfirm.paths)}
+          onCancel={() => setDeleteConfirm(null)}
+        />
+      )}
+
       <style>{`
-        .file-row:hover td { background: #ffffff05; }
-        tr:hover .file-actions { opacity: 1 !important; }
+        tr[data-file-row]:hover td { background: #ffffff05; }
       `}</style>
     </div>
   )
-}
-
-const uploadMenuItemStyle: {
-  width: string
-  textAlign: 'left'
-  background: string
-  color: string
-  border: string
-  borderRadius: string
-  padding: string
-  fontSize: string
-  cursor: 'pointer'
-} = {
-  width: '100%',
-  textAlign: 'left',
-  background: 'transparent',
-  color: 'white',
-  border: 'none',
-  borderRadius: '6px',
-  padding: '7px 10px',
-  fontSize: '13px',
-  cursor: 'pointer',
 }
 
 function IconBtn({
@@ -1010,14 +1147,12 @@ function IconBtn({
   onClick,
   danger,
   loading,
-  wide,
 }: {
   children: React.ReactNode
   title: string
   onClick: () => void
   danger?: boolean
   loading?: boolean
-  wide?: boolean
 }) {
   return (
     <button
@@ -1028,9 +1163,8 @@ function IconBtn({
         background: 'transparent',
         border: '1px solid ' + (danger ? '#dc262650' : '#61475f50'),
         color: danger ? '#f87171' : '#876f86',
-        width: wide ? 'auto' : '28px',
+        width: '28px',
         height: '28px',
-        padding: wide ? '0 10px' : undefined,
         borderRadius: '6px',
         cursor: 'pointer',
         fontSize: '14px',

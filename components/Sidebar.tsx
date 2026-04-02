@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import NewServerModal from './NewServerModal'
+import ContextMenu from './ContextMenu'
+import { DeleteServerDialog } from './ConfirmDialog'
 
 interface Server {
   id: string
@@ -18,6 +20,11 @@ export default function Sidebar() {
   const [showNewServer, setShowNewServer] = useState(false)
   const [loading, setLoading] = useState(true)
   const [username, setUsername] = useState<string | null>(null)
+  // Context menu
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; server: Server } | null>(null)
+  // Delete dialog
+  const [deleteTarget, setDeleteTarget] = useState<Server | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const fetchServers = useCallback(async () => {
     try {
@@ -36,7 +43,6 @@ export default function Sidebar() {
     fetchServers()
     const interval = setInterval(fetchServers, 5000)
 
-    // Get username for root terminal link
     fetch('/api/auth/me')
       .then((r) => r.json())
       .then((d) => { if (d.username) setUsername(d.username) })
@@ -48,6 +54,25 @@ export default function Sidebar() {
   async function handleLogout() {
     await fetch('/api/auth/logout', { method: 'POST' })
     router.push('/')
+  }
+
+  async function handleDeleteServer() {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/servers/${deleteTarget.id}`, { method: 'DELETE' })
+      if (res.ok) {
+        setDeleteTarget(null)
+        fetchServers()
+        // Navigate away if we're on the deleted server's page
+        if (pathname === `/servers/${deleteTarget.id}`) {
+          router.push('/dashboard')
+        }
+      }
+    } catch {}
+    finally {
+      setDeleting(false)
+    }
   }
 
   const activeId = pathname.startsWith('/servers/')
@@ -122,6 +147,10 @@ export default function Sidebar() {
               <Link
                 key={server.id}
                 href={`/servers/${server.id}`}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  setContextMenu({ x: e.clientX, y: e.clientY, server })
+                }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -215,6 +244,38 @@ export default function Sidebar() {
             setShowNewServer(false)
             fetchServers()
           }}
+        />
+      )}
+
+      {/* Server context menu */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={[
+            {
+              label: 'Open',
+              icon: '📂',
+              onClick: () => router.push(`/servers/${contextMenu.server.id}`),
+            },
+            {
+              label: 'Delete server',
+              icon: '🗑',
+              danger: true,
+              onClick: () => setDeleteTarget(contextMenu.server),
+            },
+          ]}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* Delete server dialog */}
+      {deleteTarget && (
+        <DeleteServerDialog
+          serverName={deleteTarget.name}
+          onConfirm={handleDeleteServer}
+          onCancel={() => { if (!deleting) setDeleteTarget(null) }}
+          deleting={deleting}
         />
       )}
     </>
