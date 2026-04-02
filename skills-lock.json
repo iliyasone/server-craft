@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "rivetkit": {
+      "source": "rivet-dev/skills",
+      "sourceType": "github",
+      "computedHash": "55e8c0c3e9df38d7d48fdd65c78b2212d27248f03c14310a5821a5fd719683bf"
+    },
+    "rivetkit-client-react": {
+      "source": "rivet-dev/skills",
+      "sourceType": "github",
+      "computedHash": "022ba489b3a6c22a4c1c789d233623ec1d86ff0030e23996c16038aa361a3928"
+    }
+  }
+}

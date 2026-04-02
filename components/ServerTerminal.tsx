@@ -1,10 +1,20 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { createClient } from 'rivetkit/client'
+import { formatTerminalError, type TerminalBootstrap } from '@/lib/terminal-rivet'
+import type { registry } from '@/rivet/registry'
 
 interface ServerTerminalProps {
   serverId: string
   terminalApiBase?: string
+}
+
+function createBrowserRivetClient() {
+  return createClient<typeof registry>({
+    endpoint: new URL('/api/rivet', window.location.origin).toString(),
+    devtools: false,
+  })
 }
 
 // Filter xterm.js terminal response sequences (DA responses, cursor reports, DCS)
@@ -12,9 +22,9 @@ interface ServerTerminalProps {
 const TERMINAL_RESPONSE_RE = /\x1b\[[\?>]?[\d;]*c|\x1b\[\d+;\d+R|\x1bP[^\x1b]*\x1b\\/g
 
 export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerminalProps) {
-  const wsPath = terminalApiBase
-    ? `${terminalApiBase}/ws`
-    : `/api/servers/${encodeURIComponent(serverId)}/terminal/ws`
+  const sessionEndpoint = terminalApiBase
+    ? `${terminalApiBase}/session`
+    : `/api/servers/${encodeURIComponent(serverId)}/terminal/session`
   const termRef = useRef<HTMLDivElement>(null)
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null)
 
@@ -26,11 +36,11 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
     let disposed = false
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let terminal: any = null
-    let socket: WebSocket | null = null
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let connection: any = null
+    const rivetClient = createBrowserRivetClient()
     let resizeObserver: ResizeObserver | null = null
     let resizeTimer: ReturnType<typeof setTimeout> | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let reconnectDelay = 1000
     // Store handleResize so cleanup can remove the window listener
     let handleResize: (() => void) | null = null
     let handlePointerUp: (() => void) | null = null
@@ -40,6 +50,8 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
     let handleDocumentPaste: ((event: ClipboardEvent) => void) | null = null
     let feedbackTimer: ReturnType<typeof setTimeout> | null = null
     let selectionChanged = false
+    let reconnectNoticeShown = false
+    const connectionCleanup = new Set<() => void>()
 
     function setClipboardFeedback(message: string) {
       setClipboardStatus(message)
@@ -127,36 +139,21 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       return delta > 0 ? Math.ceil(delta) : Math.floor(delta)
     }
 
-    function createSocketUrl(cols: number, rows: number): string {
-      const url = new URL(wsPath, window.location.origin)
-      url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      url.searchParams.set('cols', String(cols))
-      url.searchParams.set('rows', String(rows))
-      return url.toString()
-    }
-
-    function sendMessage(message: unknown) {
-      if (!socket || socket.readyState !== WebSocket.OPEN) return
-      socket.send(JSON.stringify(message))
-    }
-
-    function closeSocket() {
-      if (!socket) return
-      const current = socket
-      socket = null
-      current.onopen = null
-      current.onmessage = null
-      current.onerror = null
-      current.onclose = null
-      if (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING) {
-        current.close()
+    function disposeConnection() {
+      for (const cleanup of connectionCleanup) {
+        cleanup()
       }
+      connectionCleanup.clear()
+
+      if (!connection) return
+      const current = connection
+      connection = null
+      void current.dispose?.()
     }
 
     function stopTerminalForDelete() {
       disposed = true
       if (resizeTimer) clearTimeout(resizeTimer)
-      if (reconnectTimer) clearTimeout(reconnectTimer)
       if (feedbackTimer) clearTimeout(feedbackTimer)
       if (resizeObserver) resizeObserver.disconnect()
       if (handleResize) window.removeEventListener('resize', handleResize)
@@ -164,7 +161,7 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       if (handleKeyUp) window.removeEventListener('keyup', handleKeyUp)
       if (handleDocumentCopy) document.removeEventListener('copy', handleDocumentCopy)
       if (handleDocumentPaste) document.removeEventListener('paste', handleDocumentPaste)
-      closeSocket()
+      disposeConnection()
       terminal?.dispose()
       terminal = null
     }
@@ -247,63 +244,16 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         return true
       })
 
-      const connect = () => {
-        if (disposed) return
-        closeSocket()
-
-        const nextSocket = new WebSocket(createSocketUrl(terminal.cols, terminal.rows))
-        socket = nextSocket
-
-        nextSocket.onopen = () => {
-          if (disposed || socket !== nextSocket) return
-          reconnectDelay = 1000
-          terminal.reset()
-          terminal.focus()
-          sendMessage({ type: 'resize', cols: terminal.cols, rows: terminal.rows })
-        }
-
-        nextSocket.onmessage = (event) => {
-          if (disposed || socket !== nextSocket || typeof event.data !== 'string') return
-          try {
-            const msg = JSON.parse(event.data)
-            if (msg.type === 'data' && typeof msg.data === 'string') {
-              terminal.write(msg.data)
-            }
-          } catch {}
-        }
-
-        nextSocket.onerror = () => {
-          if (socket !== nextSocket) return
-          try { nextSocket.close() } catch {}
-        }
-
-        nextSocket.onclose = () => {
-          if (socket === nextSocket) {
-            socket = null
-          }
-          if (disposed) return
-          terminal.write('\r\n\x1b[33m[Connection lost. Reconnecting...]\x1b[0m\r\n')
-          if (reconnectTimer) return
-          reconnectTimer = setTimeout(() => {
-            reconnectTimer = null
-            if (disposed) return
-            connect()
-          }, reconnectDelay)
-          reconnectDelay = Math.min(reconnectDelay * 2, 5000)
-        }
-      }
-
-      // --- Input: send each keystroke immediately over the same socket ---
       terminal.onData((data: string) => {
-        if (disposed) return
+        if (disposed || !connection || connection.connStatus !== 'connected') return
         const filtered = data.replace(TERMINAL_RESPONSE_RE, '')
         if (!filtered) return
-        sendMessage({ type: 'input', data: filtered })
+        void connection.input(filtered).catch(() => {})
       })
 
       terminal.onBinary((data: string) => {
-        if (disposed) return
-        sendMessage({ type: 'binary', data: btoa(data) })
+        if (disposed || !connection || connection.connStatus !== 'connected') return
+        void connection.binary(btoa(data)).catch(() => {})
       })
 
       terminal.onSelectionChange(() => {
@@ -317,9 +267,62 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         selectionChanged = true
       })
 
-      connect()
+      try {
+        const response = await fetch(sessionEndpoint, {
+          method: 'POST',
+          cache: 'no-store',
+        })
 
-      // --- Resize: debounced fit + server sync over the same socket ---
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}))
+          throw new Error(
+            typeof error?.error === 'string' ? error.error : 'Failed to start terminal session'
+          )
+        }
+
+        const bootstrap = await response.json() as TerminalBootstrap
+        if (disposed) return
+
+        const terminalActor = rivetClient.terminal.getOrCreate(bootstrap.actorKey, {
+          createWithInput: {
+            session: bootstrap.session,
+            target: bootstrap.target,
+          },
+          getParams: async () => ({
+            cols: terminal.cols,
+            rows: terminal.rows,
+          }),
+        })
+
+        connection = terminalActor.connect()
+
+        connectionCleanup.add(connection.on('data', (payload: { data?: string }) => {
+          if (disposed || typeof payload?.data !== 'string') return
+          terminal.write(payload.data)
+        }))
+
+        connectionCleanup.add(connection.onOpen(() => {
+          if (disposed || !connection) return
+          reconnectNoticeShown = false
+          terminal.reset()
+          terminal.focus()
+          void connection.resize(terminal.cols, terminal.rows).catch(() => {})
+        }))
+
+        connectionCleanup.add(connection.onClose(() => {
+          if (disposed || reconnectNoticeShown) return
+          reconnectNoticeShown = true
+          terminal.write('\r\n\x1b[33m[Connection lost. Reconnecting...]\x1b[0m\r\n')
+        }))
+
+        connectionCleanup.add(connection.onError(() => {}))
+      } catch (error) {
+        if (disposed) return
+        const message = error instanceof Error ? error.message : 'Terminal connection failed'
+        terminal.write(formatTerminalError(message))
+      }
+
+      // --- Resize: debounced fit + server sync over the actor connection ---
       handleResize = () => {
         if (disposed) return
         fitAddon.fit()
@@ -328,8 +331,8 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         if (cols && rows) {
           if (resizeTimer) clearTimeout(resizeTimer)
           resizeTimer = setTimeout(() => {
-            if (disposed) return
-            sendMessage({ type: 'resize', cols, rows })
+            if (disposed || !connection) return
+            void connection.resize(cols, rows).catch(() => {})
           }, 200)
         }
       }
@@ -409,7 +412,7 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       }
       stopTerminalForDelete()
     }
-  }, [serverId, wsPath])
+  }, [serverId, sessionEndpoint])
 
   return (
     <div

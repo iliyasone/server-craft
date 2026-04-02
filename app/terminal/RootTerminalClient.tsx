@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 
-// Reuse ServerTerminal but with special session IDs pointing to root terminal API
+// Reuse ServerTerminal but point it at the root terminal bootstrap route.
 const ServerTerminal = dynamic(() => import('@/components/ServerTerminal'), {
   ssr: false,
   loading: () => (
@@ -26,7 +26,7 @@ export default function RootTerminalClient({ username }: { username: string }) {
         <span style={{ color: '#876f86', fontSize: '12px' }}>({username}@server)</span>
       </div>
 
-      {/* Terminal uses special "__root__" session */}
+      {/* Terminal uses special "__root__" ID to label the root shell tab. */}
       <ServerTerminal serverId="__root__" terminalApiBase="/api/terminal" />
     </div>
   )
