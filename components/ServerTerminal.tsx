@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 interface ServerTerminalProps {
   serverId: string
@@ -16,6 +16,7 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
     ? `${terminalApiBase}/ws`
     : `/api/servers/${encodeURIComponent(serverId)}/terminal/ws`
   const termRef = useRef<HTMLDivElement>(null)
+  const [clipboardStatus, setClipboardStatus] = useState<string | null>(null)
 
   useEffect(() => {
     if (!termRef.current) return
@@ -35,39 +36,81 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
     let handlePointerUp: (() => void) | null = null
     let handleKeyUp: (() => void) | null = null
     let handleServerDeleting: ((event: Event) => void) | null = null
+    let handleDocumentCopy: ((event: ClipboardEvent) => void) | null = null
+    let handleDocumentPaste: ((event: ClipboardEvent) => void) | null = null
+    let feedbackTimer: ReturnType<typeof setTimeout> | null = null
     let selectionChanged = false
-    let lastCopiedSelection = ''
 
-    async function copySelectionToClipboard() {
-      if (
-        !terminal ||
-        !terminal.hasSelection() ||
-        !window.isSecureContext ||
-        !navigator.clipboard?.writeText
-      ) {
-        return
+    function setClipboardFeedback(message: string) {
+      setClipboardStatus(message)
+      if (feedbackTimer) clearTimeout(feedbackTimer)
+      feedbackTimer = setTimeout(() => {
+        setClipboardStatus(null)
+      }, 1800)
+    }
+
+    async function writeTextToClipboard(text: string): Promise<boolean> {
+      if (!text) return false
+
+      if (window.isSecureContext && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text)
+          return true
+        } catch {}
       }
 
-      const selection = terminal.getSelection()
-      if (!selection || selection === lastCopiedSelection) return
+      return false
+    }
 
+    function triggerNativeCopy(): boolean {
       try {
-        await navigator.clipboard.writeText(selection)
-        lastCopiedSelection = selection
-      } catch {}
+        return document.execCommand('copy')
+      } catch {
+        return false
+      }
+    }
+
+    async function copySelectionToClipboard(mode: 'auto' | 'manual') {
+      if (!terminal || !terminal.hasSelection()) return false
+
+      const selection = terminal.getSelection()
+      if (!selection) return false
+
+      const copied = await writeTextToClipboard(selection)
+      if (copied) {
+        setClipboardFeedback('Copied')
+        return true
+      }
+
+      if (mode === 'manual' && triggerNativeCopy()) {
+        return true
+      }
+
+      if (mode === 'manual') {
+        setClipboardFeedback('Copy blocked by browser')
+      }
+      return false
     }
 
     async function pasteFromClipboard() {
-      if (!terminal || !window.isSecureContext || !navigator.clipboard?.readText) {
-        return
+      if (!terminal) return false
+
+      if (!window.isSecureContext || !navigator.clipboard?.readText) {
+        setClipboardFeedback('Use browser paste')
+        return false
       }
 
       try {
         const text = await navigator.clipboard.readText()
-        if (text) {
-          terminal.paste(text)
-        }
-      } catch {}
+        if (!text) return false
+
+        terminal.paste(text)
+        setClipboardFeedback('Pasted')
+        return true
+      } catch {
+        setClipboardFeedback('Paste blocked by browser')
+        return false
+      }
     }
 
     function getWheelLineDelta(event: WheelEvent): number {
@@ -114,10 +157,13 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       disposed = true
       if (resizeTimer) clearTimeout(resizeTimer)
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (feedbackTimer) clearTimeout(feedbackTimer)
       if (resizeObserver) resizeObserver.disconnect()
       if (handleResize) window.removeEventListener('resize', handleResize)
       if (handlePointerUp) window.removeEventListener('pointerup', handlePointerUp)
       if (handleKeyUp) window.removeEventListener('keyup', handleKeyUp)
+      if (handleDocumentCopy) document.removeEventListener('copy', handleDocumentCopy)
+      if (handleDocumentPaste) document.removeEventListener('paste', handleDocumentPaste)
       closeSocket()
       terminal?.dispose()
       terminal = null
@@ -186,9 +232,9 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         const key = event.key.toLowerCase()
         const withTerminalModifier = event.ctrlKey || event.metaKey
 
-        if (withTerminalModifier && event.shiftKey && key === 'c') {
+        if (withTerminalModifier && key === 'c' && terminal.hasSelection()) {
           event.preventDefault()
-          void copySelectionToClipboard()
+          void copySelectionToClipboard('manual')
           return false
         }
 
@@ -261,9 +307,10 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       })
 
       terminal.onSelectionChange(() => {
-        if (!terminal.hasSelection()) {
+        const nextHasSelection = terminal.hasSelection()
+
+        if (!nextHasSelection) {
           selectionChanged = false
-          lastCopiedSelection = ''
           return
         }
 
@@ -294,16 +341,57 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
       handlePointerUp = () => {
         if (!selectionChanged) return
         selectionChanged = false
-        void copySelectionToClipboard()
+        void copySelectionToClipboard('auto')
       }
       handleKeyUp = () => {
         if (!selectionChanged) return
         selectionChanged = false
-        void copySelectionToClipboard()
+        void copySelectionToClipboard('auto')
       }
 
       window.addEventListener('pointerup', handlePointerUp)
       window.addEventListener('keyup', handleKeyUp)
+
+      handleDocumentCopy = (event: ClipboardEvent) => {
+        if (!terminal?.hasSelection()) return
+
+        const eventTarget = event.target as Node | null
+        const activeElement = document.activeElement
+        const isTerminalContext =
+          (eventTarget ? container.contains(eventTarget) : false) ||
+          (activeElement ? container.contains(activeElement) : false)
+
+        if (!isTerminalContext) return
+
+        const selection = terminal.getSelection()
+        if (!selection) return
+
+        event.preventDefault()
+        event.clipboardData?.setData('text/plain', selection)
+        setClipboardFeedback('Copied')
+      }
+
+      handleDocumentPaste = (event: ClipboardEvent) => {
+        if (!terminal) return
+
+        const eventTarget = event.target as Node | null
+        const activeElement = document.activeElement
+        const isTerminalContext =
+          (eventTarget ? container.contains(eventTarget) : false) ||
+          (activeElement ? container.contains(activeElement) : false)
+
+        if (!isTerminalContext) return
+
+        const text = event.clipboardData?.getData('text/plain')
+        if (!text) return
+
+        event.preventDefault()
+        terminal.paste(text)
+        setClipboardFeedback('Pasted')
+      }
+
+      document.addEventListener('copy', handleDocumentCopy)
+      document.addEventListener('paste', handleDocumentPaste)
 
       handleServerDeleting = (event: Event) => {
         const customEvent = event as CustomEvent<{ serverId?: string }>
@@ -350,9 +438,11 @@ export default function ServerTerminal({ serverId, terminalApiBase }: ServerTerm
         }}
       >
         <span style={{ fontSize: '12px' }}>Terminal — {serverId}</span>
-        <span style={{ fontSize: '11px', color: '#61475f', textAlign: 'right' }}>
-          Select to copy • Paste with Ctrl/Cmd+Shift+V
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+          <span style={{ fontSize: '11px', color: clipboardStatus ? '#fd87f6' : '#61475f', textAlign: 'right' }}>
+            {clipboardStatus || 'Hold Shift while selecting to copy terminal text'}
+          </span>
+        </div>
       </div>
       <div
         ref={termRef}

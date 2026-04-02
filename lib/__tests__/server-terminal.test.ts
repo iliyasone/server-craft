@@ -76,13 +76,13 @@ describe('parseServerRuntimeStatus', () => {
 })
 
 describe('buildEnsureServerSessionCommand', () => {
-  it('boots new tmux sessions with bash and enables mouse mode', () => {
+  it('boots new tmux sessions with bash and disables tmux mouse mode', () => {
     const command = buildEnsureServerSessionCommand('alpha')
     expect(command).toContain(
       "tmux new-session -d -s 'craft-alpha' -c '/home/server-craft/alpha' /bin/bash -il"
     )
     expect(command).toContain(
-      "tmux set-option -t 'craft-alpha' mouse on >/dev/null 2>&1 || true"
+      "tmux set-option -t 'craft-alpha' mouse off >/dev/null 2>&1 || true"
     )
   })
 })

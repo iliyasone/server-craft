@@ -267,7 +267,7 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
               />
               {nameConflict ? (
                 <p style={{ color: '#f87171', fontSize: '12px', marginTop: '4px' }}>
-                  A server named "{sanitizedName}" already exists
+                  A server named &quot;{sanitizedName}&quot; already exists
                 </p>
               ) : (
                 <p style={{ color: '#61475f', fontSize: '12px', marginTop: '4px' }}>
