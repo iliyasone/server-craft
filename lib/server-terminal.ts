@@ -78,7 +78,7 @@ export function buildEnsureServerSessionCommand(serverId: string): string {
       `else ` +
         `tmux new-session -d -s ${shellQuote(sessionName)} -c ${shellQuote(serverDir)}; ` +
       `fi; ` +
-    `tmux set-option -t ${shellQuote(sessionName)} mouse off >/dev/null 2>&1 || true; ` +
+    `tmux set-option -t ${shellQuote(sessionName)} mouse on >/dev/null 2>&1 || true; ` +
     `tmux set-option -t ${shellQuote(sessionName)} history-limit 50000 >/dev/null 2>&1 || true`
   )
 }
