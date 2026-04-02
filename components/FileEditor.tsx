@@ -108,12 +108,21 @@ export default function FileEditor({ serverId, filePath, fileName, onClose }: Fi
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const preRef = useRef<HTMLPreElement>(null)
   const lineNumbersRef = useRef<HTMLDivElement>(null)
 
   const language = getLanguage(fileName)
   const hasChanges = content !== originalContent
+
+  function handleClose() {
+    if (hasChanges) {
+      setShowUnsavedDialog(true)
+    } else {
+      onClose()
+    }
+  }
 
   const fetchContent = useCallback(async () => {
     setLoading(true)
@@ -201,7 +210,97 @@ export default function FileEditor({ serverId, filePath, fileName, onClose }: Fi
     .join('\n')
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#0d0d0d' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#0d0d0d', position: 'relative' }}>
+      {/* Unsaved changes dialog */}
+      {showUnsavedDialog && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: '#00000088',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 50,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowUnsavedDialog(false)
+          }}
+        >
+          <div
+            style={{
+              background: '#300a2e',
+              border: '1px solid #fd87f6',
+              borderRadius: '16px',
+              padding: '28px 32px',
+              width: '340px',
+              color: 'white',
+            }}
+          >
+            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '8px' }}>
+              Unsaved changes
+            </h3>
+            <p style={{ color: '#876f86', fontSize: '13px', marginBottom: '20px', lineHeight: 1.5 }}>
+              You have unsaved changes in <strong style={{ color: '#fd87f6' }}>{fileName}</strong>. Do you want to save before closing?
+            </p>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                onClick={() => {
+                  setShowUnsavedDialog(false)
+                  onClose()
+                }}
+                style={{
+                  flex: 1,
+                  background: 'transparent',
+                  border: '1px solid #dc262660',
+                  color: '#f87171',
+                  padding: '8px',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                }}
+              >
+                Discard
+              </button>
+              <button
+                onClick={() => setShowUnsavedDialog(false)}
+                style={{
+                  flex: 1,
+                  background: 'transparent',
+                  border: '1px solid #61475f',
+                  color: '#876f86',
+                  padding: '8px',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setShowUnsavedDialog(false)
+                  await handleSave()
+                  onClose()
+                }}
+                style={{
+                  flex: 1,
+                  background: '#22c55e',
+                  color: 'white',
+                  border: 'none',
+                  padding: '8px',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Editor toolbar */}
       <div
         style={{
@@ -215,7 +314,7 @@ export default function FileEditor({ serverId, filePath, fileName, onClose }: Fi
         }}
       >
         <button
-          onClick={onClose}
+          onClick={handleClose}
           style={{
             background: 'none',
             border: 'none',

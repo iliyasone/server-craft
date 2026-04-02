@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, FormEvent } from 'react'
+import { useState, useRef, useEffect, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { SERVERS_DIR_CLIENT } from '@/lib/client-constants'
 
@@ -43,7 +43,24 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
   const [step, setStep] = useState<'form' | 'creating' | 'uploading' | 'done' | 'error'>('form')
   const [error, setError] = useState('')
   const [progress, setProgress] = useState('')
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [existingNames, setExistingNames] = useState<Set<string>>(new Set())
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Fetch existing server names
+  useEffect(() => {
+    fetch('/api/servers', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.servers) {
+          setExistingNames(new Set(data.servers.map((s: { id: string }) => s.id.toLowerCase())))
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  const sanitizedName = name.replace(/[^a-zA-Z0-9_-]/g, '').trim().toLowerCase()
+  const nameConflict = sanitizedName.length > 0 && existingNames.has(sanitizedName)
 
   function handleJarSelect(file: File) {
     setJarFile(file)
@@ -59,10 +76,15 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
       setError('Server name is required')
       return
     }
+    if (nameConflict) {
+      setError('A server with this name already exists')
+      return
+    }
 
     setStep('creating')
     setError('')
     setProgress('Creating server directory…')
+    setUploadProgress(0)
 
     try {
       const createRes = await fetch('/api/servers', {
@@ -82,18 +104,40 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
         setStep('uploading')
         setProgress(`Uploading ${jarFile.name}…`)
 
-        const formData = new FormData()
-        formData.append('path', `${SERVERS_DIR_CLIENT}/${serverId}`)
-        formData.append('files', jarFile)
+        const uploadUrl = `/api/servers/${serverId}/files/upload?path=${encodeURIComponent(`${SERVERS_DIR_CLIENT}/${serverId}`)}&relativePath=${encodeURIComponent(jarFile.name)}`
 
-        const uploadRes = await fetch(`/api/servers/${serverId}/files/upload`, {
-          method: 'POST',
-          body: formData,
+        const result = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+          const xhr = new XMLHttpRequest()
+          xhr.open('PUT', uploadUrl, true)
+          xhr.withCredentials = true
+          xhr.setRequestHeader('Content-Type', jarFile!.type || 'application/octet-stream')
+
+          xhr.upload.onprogress = (event) => {
+            if (!event.lengthComputable || event.total <= 0) return
+            const pct = Math.min(100, Math.round((event.loaded / event.total) * 100))
+            setUploadProgress(pct)
+          }
+
+          xhr.onerror = () => resolve({ ok: false, error: 'Network error during upload' })
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              setUploadProgress(100)
+              resolve({ ok: true })
+              return
+            }
+            try {
+              const payload = JSON.parse(xhr.responseText || '{}')
+              resolve({ ok: false, error: payload.error || `Upload failed (${xhr.status})` })
+            } catch {
+              resolve({ ok: false, error: `Upload failed (${xhr.status})` })
+            }
+          }
+
+          xhr.send(jarFile)
         })
 
-        if (!uploadRes.ok) {
-          const uploadData = await uploadRes.json()
-          throw new Error(uploadData.error || 'Failed to upload JAR')
+        if (!result.ok) {
+          throw new Error(result.error || 'Failed to upload JAR')
         }
       }
 
@@ -201,25 +245,35 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
               <input
                 type="text"
                 value={name}
-                onChange={(e) => setName(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))}
+                onChange={(e) => {
+                  setName(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ''))
+                  setError('')
+                }}
                 placeholder="my-server"
                 disabled={isLoading}
                 pattern="[a-zA-Z0-9_-]+"
                 required
                 style={{
                   background: '#3d1f3b',
-                  border: '1px solid #61475f',
+                  border: nameConflict ? '1px solid #dc2626' : '1px solid #61475f',
                   borderRadius: '10px',
                   color: 'white',
                   padding: '11px 14px',
                   fontSize: '15px',
                   width: '100%',
                   outline: 'none',
+                  transition: 'border-color 0.15s',
                 }}
               />
-              <p style={{ color: '#61475f', fontSize: '12px', marginTop: '4px' }}>
-                Letters, numbers, hyphens, underscores
-              </p>
+              {nameConflict ? (
+                <p style={{ color: '#f87171', fontSize: '12px', marginTop: '4px' }}>
+                  A server named "{sanitizedName}" already exists
+                </p>
+              ) : (
+                <p style={{ color: '#61475f', fontSize: '12px', marginTop: '4px' }}>
+                  Letters, numbers, hyphens, underscores
+                </p>
+              )}
             </div>
 
             {isLoading && (
@@ -234,7 +288,33 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
                   color: '#22c55e',
                 }}
               >
-                {progress}
+                <div style={{ marginBottom: step === 'uploading' ? '8px' : 0 }}>{progress}</div>
+                {step === 'uploading' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div
+                      style={{
+                        flex: 1,
+                        height: '6px',
+                        borderRadius: '999px',
+                        background: '#ffffff18',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${uploadProgress}%`,
+                          height: '100%',
+                          borderRadius: '999px',
+                          background: '#22c55e',
+                          transition: 'width 0.2s ease',
+                        }}
+                      />
+                    </div>
+                    <span style={{ fontSize: '12px', minWidth: '36px', textAlign: 'right' }}>
+                      {uploadProgress}%
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -274,15 +354,15 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
               </button>
               <button
                 type="submit"
-                disabled={isLoading}
+                disabled={isLoading || nameConflict}
                 style={{
                   flex: 2,
-                  background: isLoading ? '#16a34a99' : '#22c55e',
+                  background: isLoading || nameConflict ? '#16a34a99' : '#22c55e',
                   color: 'white',
                   border: 'none',
                   padding: '10px',
                   borderRadius: '8px',
-                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                  cursor: isLoading || nameConflict ? 'not-allowed' : 'pointer',
                   fontWeight: '700',
                   fontSize: '15px',
                 }}
