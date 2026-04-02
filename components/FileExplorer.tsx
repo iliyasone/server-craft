@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, DragEvent } from 'react'
 import { SERVERS_DIR_CLIENT } from '@/lib/client-constants'
+import { uploadFileWithProgress } from '@/lib/client-upload'
 import ContextMenu, { ContextMenuItem } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
 
@@ -16,42 +17,6 @@ interface FileEntry {
 interface FileExplorerProps {
   serverId: string
   onOpenFile?: (path: string, name: string) => void
-}
-
-async function uploadFileWithProgress(
-  url: string,
-  file: File,
-  onProgress: (value: number) => void
-): Promise<{ ok: boolean; error?: string }> {
-  return new Promise((resolve) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open('PUT', url, true)
-    xhr.withCredentials = true
-    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
-
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable || event.total <= 0) return
-      const progress = Math.min(100, Math.round((event.loaded / event.total) * 100))
-      onProgress(progress)
-    }
-
-    xhr.onerror = () => resolve({ ok: false, error: 'Network error during upload' })
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(100)
-        resolve({ ok: true })
-        return
-      }
-      try {
-        const payload = JSON.parse(xhr.responseText || '{}')
-        resolve({ ok: false, error: payload.error || `Upload failed (${xhr.status})` })
-      } catch {
-        resolve({ ok: false, error: `Upload failed (${xhr.status})` })
-      }
-    }
-
-    xhr.send(file)
-  })
 }
 
 function formatSize(bytes: number): string {

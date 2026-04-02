@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { SERVERS_DIR_CLIENT } from '@/lib/client-constants'
+import { uploadFileWithProgress } from '@/lib/client-upload'
 
 interface NewServerModalProps {
   onClose: () => void
@@ -106,34 +107,8 @@ export default function NewServerModal({ onClose, onCreated }: NewServerModalPro
 
         const uploadUrl = `/api/servers/${serverId}/files/upload?path=${encodeURIComponent(`${SERVERS_DIR_CLIENT}/${serverId}`)}&relativePath=${encodeURIComponent(jarFile.name)}`
 
-        const result = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
-          const xhr = new XMLHttpRequest()
-          xhr.open('PUT', uploadUrl, true)
-          xhr.withCredentials = true
-          xhr.setRequestHeader('Content-Type', jarFile!.type || 'application/octet-stream')
-
-          xhr.upload.onprogress = (event) => {
-            if (!event.lengthComputable || event.total <= 0) return
-            const pct = Math.min(100, Math.round((event.loaded / event.total) * 100))
-            setUploadProgress(pct)
-          }
-
-          xhr.onerror = () => resolve({ ok: false, error: 'Network error during upload' })
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              setUploadProgress(100)
-              resolve({ ok: true })
-              return
-            }
-            try {
-              const payload = JSON.parse(xhr.responseText || '{}')
-              resolve({ ok: false, error: payload.error || `Upload failed (${xhr.status})` })
-            } catch {
-              resolve({ ok: false, error: `Upload failed (${xhr.status})` })
-            }
-          }
-
-          xhr.send(jarFile)
+        const result = await uploadFileWithProgress(uploadUrl, jarFile, (pct) => {
+          setUploadProgress(pct)
         })
 
         if (!result.ok) {

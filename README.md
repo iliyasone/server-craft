@@ -33,7 +33,7 @@ If a server ships as a runnable JAR and does not need extra launcher logic, it g
 - React 19
 - TypeScript
 - `ssh2` for remote execution
-- `ws` for terminal transport
+- RivetKit for Vercel-compatible terminal WebSocket transport
 - xterm.js for the in-browser terminal
 
 ## Local development
@@ -44,6 +44,10 @@ npm run dev
 ```
 
 The app runs on `http://localhost:3000`.
+
+Local `npm run dev` and local production `npm run build && npm run start` work without a Rivet Cloud account. In those cases the `/api/rivet` route auto-starts a local Rivet engine for the terminal transport.
+
+If you set `RIVET_ENDPOINT`, the app assumes you want to use an explicit Rivet backend instead of the local auto-spawned one.
 
 ## How the app works
 
@@ -59,6 +63,25 @@ The app runs on `http://localhost:3000`.
 - Server terminals attach to `craft-<server-id>`
 - Terminal selection now copies automatically
 - Paste uses `Ctrl/Cmd+Shift+V`
+
+## Why Rivet
+
+The terminal used to run through a custom Node.js WebSocket upgrade server. That worked locally, but it was tied to `server.ts` and did not survive normal Vercel deployment because Vercel does not run your custom long-lived WebSocket server process.
+
+Rivet solves that by acting as the realtime transport layer for the browser terminal while the actual terminal process still lives in this app and still connects to the remote host over SSH. The result is:
+
+- Local development still feels like a normal Next.js app
+- Vercel deployments can keep a realtime terminal without the old custom server
+- The SSH/tmux logic stays inside this codebase instead of moving to a separate backend
+
+## Deploying with Rivet
+
+For deployed environments, configure Rivet so the app can expose `/api/rivet` through Rivet's serverless transport.
+
+- `RIVET_ENDPOINT=https://<namespace>:<secret-token>@api.rivet.dev`
+- `RIVET_PUBLIC_ENDPOINT=https://<namespace>:<public-token>@api.rivet.dev`
+
+If Vercel Deployment Protection is enabled, Rivet also needs the deployment bypass header configured on its side so it can reach your deployed `/api/rivet` route.
 
 ## Project scripts
 

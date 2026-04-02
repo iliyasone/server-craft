@@ -57,6 +57,28 @@ function removeRemoteFile(sftp: SFTPWrapper, remotePath: string): Promise<void> 
   })
 }
 
+function statRemoteFile(
+  sftp: SFTPWrapper,
+  remotePath: string
+): Promise<{ size: number } | null> {
+  return new Promise((resolve, reject) => {
+    sftp.stat(remotePath, (err, stats) => {
+      if (err) {
+        const message = err.message || ''
+        if (message.includes('No such file') || message.includes('ENOENT')) {
+          resolve(null)
+          return
+        }
+
+        reject(err)
+        return
+      }
+
+      resolve({ size: stats.size })
+    })
+  })
+}
+
 async function moveRemoteFile(client: Client, from: string, to: string): Promise<void> {
   const { stderr, code } = await execCommand(
     client,
@@ -121,4 +143,52 @@ export async function uploadRemoteFile(
   file: File
 ): Promise<void> {
   await uploadRemoteStream(client, sftp, remotePath, file.stream())
+}
+
+export async function appendRemoteStream(
+  sftp: SFTPWrapper,
+  remotePath: string,
+  stream: ReadableStream<Uint8Array>
+): Promise<void> {
+  const existing = await statRemoteFile(sftp, remotePath)
+  const reader = stream.getReader()
+  let handle: Buffer | null = null
+  let position = existing?.size ?? 0
+
+  try {
+    handle = await openRemoteFile(sftp, remotePath, existing ? 'a' : 'w')
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value?.byteLength) continue
+
+      const chunk = toBuffer(value)
+      await writeRemoteChunk(sftp, handle, chunk, position)
+      position += chunk.length
+    }
+
+    await closeRemoteFile(sftp, handle)
+    handle = null
+  } catch (error) {
+    if (handle) {
+      try {
+        await closeRemoteFile(sftp, handle)
+      } catch {}
+    }
+
+    throw error
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {}
+  }
+}
+
+export async function finalizeRemoteUpload(
+  client: Client,
+  tempPath: string,
+  remotePath: string
+): Promise<void> {
+  await moveRemoteFile(client, tempPath, remotePath)
 }

@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
 import { createSSHClient, getSFTP, execCommand } from '@/lib/ssh'
-import { uploadRemoteFile, uploadRemoteStream } from '@/lib/remote-upload'
+import {
+  appendRemoteStream,
+  finalizeRemoteUpload,
+  uploadRemoteFile,
+  uploadRemoteStream,
+} from '@/lib/remote-upload'
 import { SERVERS_DIR } from '@/lib/servers'
 import { shellQuote } from '@/lib/server-terminal'
 
@@ -16,6 +21,10 @@ function normalizeRelativePath(path: string): string | null {
 async function validateUploadPath(destPath: string): Promise<string | null> {
   if (!destPath || !destPath.startsWith(SERVERS_DIR + '/')) return null
   return destPath
+}
+
+function createChunkTempPath(remotePath: string, uploadId: string): string {
+  return `${remotePath}.chunk-${uploadId}.part`
 }
 
 export async function POST(
@@ -86,6 +95,11 @@ export async function PUT(
     const search = request.nextUrl.searchParams
     const destPath = search.get('path') || ''
     const relativePath = normalizeRelativePath(search.get('relativePath') || '')
+    const uploadId = search.get('uploadId') || ''
+    const chunkIndexParam = search.get('chunkIndex')
+    const totalChunksParam = search.get('totalChunks')
+    const chunkIndex = chunkIndexParam ? Number.parseInt(chunkIndexParam, 10) : null
+    const totalChunks = totalChunksParam ? Number.parseInt(totalChunksParam, 10) : null
 
     if (!(await validateUploadPath(destPath)) || !relativePath) {
       return NextResponse.json({ error: 'Invalid upload path' }, { status: 400 })
@@ -101,6 +115,28 @@ export async function PUT(
     const remotePath = `${destPath}/${relativePath}`
     const remoteDir = remotePath.includes('/') ? remotePath.slice(0, remotePath.lastIndexOf('/')) : destPath
     await execCommand(client, `mkdir -p ${shellQuote(remoteDir)}`)
+
+    const isChunkedUpload = uploadId && chunkIndex !== null && totalChunks !== null
+
+    if (isChunkedUpload) {
+      if (!Number.isFinite(chunkIndex) || !Number.isFinite(totalChunks) || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks) {
+        return NextResponse.json({ error: 'Invalid upload chunk metadata' }, { status: 400 })
+      }
+
+      const tempPath = createChunkTempPath(remotePath, uploadId)
+      await appendRemoteStream(sftp, tempPath, request.body)
+
+      if (chunkIndex === totalChunks - 1) {
+        await finalizeRemoteUpload(client, tempPath, remotePath)
+      }
+
+      return NextResponse.json({
+        ok: true,
+        uploaded: chunkIndex === totalChunks - 1 ? [remotePath] : [],
+        partial: chunkIndex !== totalChunks - 1,
+      })
+    }
+
     await uploadRemoteStream(client, sftp, remotePath, request.body)
 
     return NextResponse.json({ ok: true, uploaded: [remotePath] })
