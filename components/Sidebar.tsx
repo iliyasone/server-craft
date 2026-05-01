@@ -13,7 +13,7 @@ interface Server {
   status: 'running' | 'starting' | 'stopped'
 }
 
-export default function Sidebar() {
+export default function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
   const pathname = usePathname()
   const router = useRouter()
   const [servers, setServers] = useState<Server[]>([])
@@ -169,6 +169,7 @@ export default function Sidebar() {
               <Link
                 key={server.id}
                 href={`/servers/${server.id}`}
+                onClick={() => onNavigate?.()}
                 onContextMenu={(e) => {
                   e.preventDefault()
                   setContextMenu({ x: e.clientX, y: e.clientY, server })
@@ -220,6 +221,7 @@ export default function Sidebar() {
           <div style={{ padding: '8px 10px' }}>
             <Link
               href="/terminal"
+              onClick={() => onNavigate?.()}
               style={{
                 display: 'flex',
                 alignItems: 'center',

@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic'
 import FileExplorer from '@/components/FileExplorer'
 import FileEditor from '@/components/FileEditor'
 import NotionTimer from '@/components/NotionTimer'
+import { useIsMobile } from '@/lib/useIsMobile'
 
 const ServerTerminal = dynamic(() => import('@/components/ServerTerminal'), {
   ssr: false,
@@ -50,6 +51,7 @@ interface ServerPageClientProps {
 }
 
 export default function ServerPageClient({ id, host }: ServerPageClientProps) {
+  const isMobile = useIsMobile()
   const [status, setStatus] = useState<'running' | 'starting' | 'stopped'>('stopped')
   const [uptime, setUptime] = useState<string | null>(null)
   const [notionStatus, setNotionStatus] = useState<NotionStatusData | null>(null)
@@ -57,8 +59,9 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   const [actionLoading, setActionLoading] = useState(false)
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null)
   const [startHover, setStartHover] = useState(false)
-  // File editor state
   const [editingFile, setEditingFile] = useState<{ path: string; name: string } | null>(null)
+  // Mobile: which panel is shown
+  const [mobilePanel, setMobilePanel] = useState<'console' | 'files'>('console')
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -151,6 +154,210 @@ export default function ServerPageClient({ id, host }: ServerPageClientProps) {
   const isStarted = status !== 'stopped'
   const needsInstall = serverInfo?.needsInstall ?? false
 
+  // ─── Mobile layout ───
+  if (isMobile) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          flex: 1,
+          overflow: 'hidden',
+          color: 'white',
+          minHeight: 0,
+        }}
+      >
+        {/* Compact top bar: server name + status + actions */}
+        <div
+          style={{
+            background: '#300a2e',
+            borderBottom: '1px solid #fd87f6',
+            padding: '8px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            flexShrink: 0,
+          }}
+        >
+          {/* Status dot */}
+          <div
+            style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              flexShrink: 0,
+              background:
+                status === 'running' ? '#22c55e' : status === 'starting' ? '#f59e0b' : '#61475f',
+            }}
+          />
+          <span style={{ fontSize: '15px', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+            {id}
+          </span>
+          {serverInfo && (
+            <span
+              style={{
+                fontSize: '10px',
+                padding: '1px 6px',
+                borderRadius: '4px',
+                background: serverInfo.type === 'forge' ? '#7c3aed20' : '#06b6d420',
+                border: `1px solid ${serverInfo.type === 'forge' ? '#7c3aed' : '#06b6d4'}`,
+                color: serverInfo.type === 'forge' ? '#a78bfa' : '#67e8f9',
+                textTransform: 'uppercase',
+                letterSpacing: '0.5px',
+                flexShrink: 0,
+              }}
+            >
+              {serverInfo.type}
+            </span>
+          )}
+          {uptime && isStarted && (
+            <span style={{ color: '#876f86', fontSize: '11px', flexShrink: 0 }}>{uptime}</span>
+          )}
+
+          {/* Action buttons */}
+          <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+            {isStarted ? (
+              <button
+                onClick={handleStop}
+                disabled={actionLoading}
+                style={{
+                  background: '#dc2626',
+                  color: 'white',
+                  border: 'none',
+                  padding: '5px 14px',
+                  borderRadius: '6px',
+                  cursor: actionLoading ? 'not-allowed' : 'pointer',
+                  fontWeight: 700,
+                  fontSize: '13px',
+                  opacity: actionLoading ? 0.7 : 1,
+                }}
+              >
+                {actionLoading ? '…' : 'Stop'}
+              </button>
+            ) : (
+              <>
+                {needsInstall && (
+                  <button
+                    onClick={handleInstall}
+                    disabled={actionLoading}
+                    style={{
+                      background: '#7c3aed',
+                      color: 'white',
+                      border: 'none',
+                      padding: '5px 12px',
+                      borderRadius: '6px',
+                      cursor: actionLoading ? 'not-allowed' : 'pointer',
+                      fontWeight: 700,
+                      fontSize: '13px',
+                      opacity: actionLoading ? 0.7 : 1,
+                    }}
+                  >
+                    {actionLoading ? '…' : 'Install'}
+                  </button>
+                )}
+                <button
+                  onClick={handleStart}
+                  disabled={actionLoading || notionBlocked}
+                  style={{
+                    background: notionBlocked ? '#374151' : '#22c55e',
+                    color: 'white',
+                    border: 'none',
+                    padding: '5px 14px',
+                    borderRadius: '6px',
+                    cursor: actionLoading || notionBlocked ? 'not-allowed' : 'pointer',
+                    fontWeight: 700,
+                    fontSize: '13px',
+                    opacity: actionLoading ? 0.7 : 1,
+                  }}
+                >
+                  {actionLoading ? '…' : notionBlocked ? '🔒' : 'Start'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Notion Timer */}
+        {notionStatus && (
+          <NotionTimer notionStatus={notionStatus} onRefresh={fetchNotionStatus} />
+        )}
+
+        {notionError && !notionStatus && (
+          <div
+            style={{
+              background: '#f8717112',
+              borderBottom: '1px solid #f8717140',
+              padding: '6px 12px',
+              fontSize: '12px',
+              color: '#f87171',
+              flexShrink: 0,
+            }}
+          >
+            Notion: {notionError}
+          </div>
+        )}
+
+        {/* Tab bar: Console / Files */}
+        <div
+          style={{
+            display: 'flex',
+            background: '#1a0a1a',
+            borderBottom: '1px solid #fd87f640',
+            flexShrink: 0,
+          }}
+        >
+          {(['console', 'files'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setMobilePanel(tab)}
+              style={{
+                flex: 1,
+                padding: '8px 0',
+                background: mobilePanel === tab ? '#fd87f615' : 'transparent',
+                border: 'none',
+                borderBottom: mobilePanel === tab ? '2px solid #fd87f6' : '2px solid transparent',
+                color: mobilePanel === tab ? '#fd87f6' : '#876f86',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                textTransform: 'capitalize',
+              }}
+            >
+              {tab === 'console' ? '⌨ Console' : '📁 Files'}
+            </button>
+          ))}
+        </div>
+
+        {/* Panel content */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          {mobilePanel === 'console' ? (
+            editingFile ? (
+              <FileEditor
+                key={editingFile.path}
+                serverId={id}
+                filePath={editingFile.path}
+                fileName={editingFile.name}
+                onClose={() => setEditingFile(null)}
+              />
+            ) : (
+              <ServerTerminal key={id} serverId={id} />
+            )
+          ) : (
+            <FileExplorer
+              key={id}
+              serverId={id}
+              onOpenFile={(path, name) => {
+                setEditingFile({ path, name })
+                setMobilePanel('console')
+              }}
+            />
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // ─── Desktop layout (unchanged) ───
   return (
     <div
       style={{
