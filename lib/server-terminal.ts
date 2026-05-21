@@ -20,6 +20,11 @@ const SERVER_OUTPUT_MARKERS = [
   '/WARN]',
   '/ERROR]',
 ]
+const WORLD_SAVE_COMPLETE_MARKERS = [
+  'Saved the game',
+  'Saved the world',
+  'All chunks are saved',
+]
 const SHELL_COMMANDS = new Set(['', 'bash', 'sh', 'zsh', 'fish', 'dash', 'tmux'])
 const ESCAPE_SEQUENCES: Array<[string, string]> = [
   ['\x1b[1;5A', 'C-Up'],
@@ -45,6 +50,44 @@ export function shellQuote(value: string): string {
 
 export function getServerSessionName(serverId: string): string {
   return `craft-${serverId}`
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function captureServerPaneOutput(client: Client, serverId: string): Promise<string> {
+  const sessionName = getServerSessionName(serverId)
+  const { stdout, code } = await execCommand(
+    client,
+    `tmux capture-pane -p -S -1000 -t ${shellQuote(sessionName)} 2>/dev/null || true`
+  )
+
+  if (code !== 0) return ''
+  return stdout
+}
+
+function countWorldSaveCompleteMarkers(output: string): number {
+  return output
+    .replace(/\r/g, '')
+    .split('\n')
+    .filter((line) => WORLD_SAVE_COMPLETE_MARKERS.some((marker) => line.includes(marker)))
+    .length
+}
+
+async function waitForWorldSaveFlush(
+  client: Client,
+  serverId: string,
+  previousMarkerCount: number,
+  timeoutMs: number
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    await delay(500)
+    const output = await captureServerPaneOutput(client, serverId)
+    if (countWorldSaveCompleteMarkers(output) > previousMarkerCount) return
+  }
 }
 
 export function buildInteractiveLoginShellCommand(): string {
@@ -194,6 +237,39 @@ export async function sendServerTerminalInput(
   if (code !== 0) {
     throw new Error(stderr.trim() || 'Failed to send input to remote terminal')
   }
+}
+
+export async function flushServerWorldForSnapshot(
+  client: Client,
+  serverId: string,
+  options?: { timeoutMs?: number }
+): Promise<boolean> {
+  const { status } = await getServerRuntimeInfo(client, serverId)
+  if (status !== 'running') return false
+
+  const previousOutput = await captureServerPaneOutput(client, serverId)
+  const previousMarkerCount = countWorldSaveCompleteMarkers(previousOutput)
+  let autosaveDisabled = false
+
+  try {
+    await sendServerTerminalInput(client, serverId, '\x15save-off\r', { ensureSession: false })
+    autosaveDisabled = true
+    await sendServerTerminalInput(client, serverId, '\x15save-all flush\r', { ensureSession: false })
+    await waitForWorldSaveFlush(client, serverId, previousMarkerCount, options?.timeoutMs ?? 45000)
+    return true
+  } catch (err) {
+    if (autosaveDisabled) {
+      await restoreServerWorldAutosave(client, serverId).catch(() => {})
+    }
+    throw err
+  }
+}
+
+export async function restoreServerWorldAutosave(
+  client: Client,
+  serverId: string
+): Promise<void> {
+  await sendServerTerminalInput(client, serverId, '\x15save-on\r', { ensureSession: false })
 }
 
 export function parseServerRuntimeStatus(
