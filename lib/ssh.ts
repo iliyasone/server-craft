@@ -206,6 +206,21 @@ export async function execCommand(
   return next
 }
 
+// Open an exec channel and resolve with the live stream so the caller can pipe
+// stdout directly (e.g. streaming a `tar` archive to an HTTP response) without
+// buffering the whole output in memory or staging it on disk.
+export function execStream(
+  client: Client,
+  command: string
+): Promise<import('ssh2').ClientChannel> {
+  return new Promise((resolve, reject) => {
+    client.exec(command, (err, stream) => {
+      if (err) return reject(err)
+      resolve(stream)
+    })
+  })
+}
+
 function getSFTPOnce(client: Client): Promise<SFTPWrapper> {
   return new Promise((resolve, reject) => {
     client.sftp((err, sftp) => {

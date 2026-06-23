@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/session'
-import { getSSHClient, getSFTP, execCommand } from '@/lib/ssh'
+import { getSSHClient, getSFTP, execCommand, execStream } from '@/lib/ssh'
 import { SERVERS_DIR } from '@/lib/servers'
 import {
   flushServerWorldForSnapshot,
@@ -8,7 +8,9 @@ import {
   shellQuote,
 } from '@/lib/server-terminal'
 
-export const maxDuration = 300
+// A multi-GB world streams at disk/network speed but can still take a while on
+// a slow client link, so give the streaming response plenty of headroom.
+export const maxDuration = 3600
 
 function getServerRoot(id: string): string {
   return `${SERVERS_DIR}/${id}`
@@ -36,11 +38,17 @@ function safeDownloadName(name: string): string {
 }
 
 function archiveFileName(paths: string[]): string {
-  if (paths.length !== 1) return 'download.tar.gz'
-  return `${safeDownloadName(baseName(paths[0]))}.tar.gz`
+  if (paths.length !== 1) return 'download.tar'
+  return `${safeDownloadName(baseName(paths[0]))}.tar`
 }
 
-function buildTarCommand(tarPath: string, paths: string[]): string {
+// Build a `tar` command that writes the archive to stdout (`-cf -`) so it can be
+// streamed straight to the client. We intentionally do NOT gzip: a Minecraft
+// world is almost entirely `.mca` region files, which are already compressed.
+// gzip would burn minutes of CPU for a ~20% size win while delaying the first
+// byte until the whole archive is built — the old behavior that truncated large
+// downloads. Plain tar starts streaming immediately.
+function buildTarCommand(paths: string[]): string {
   const parents = new Set(paths.map(parentDir))
 
   if (parents.size === 1) {
@@ -49,14 +57,14 @@ function buildTarCommand(tarPath: string, paths: string[]): string {
       .map((path) => shellQuote(`./${baseName(path)}`))
       .join(' ')
 
-    return `tar -C ${shellQuote(parent)} -czf ${shellQuote(tarPath)} ${entries}`
+    return `tar -C ${shellQuote(parent)} -cf - ${entries}`
   }
 
   const entries = paths
     .map((path) => shellQuote(`./${path.replace(/^\/+/, '').replace(/\/+$/, '')}`))
     .join(' ')
 
-  return `tar -C / -czf ${shellQuote(tarPath)} ${entries}`
+  return `tar -C / -cf - ${entries}`
 }
 
 async function pathType(client: Awaited<ReturnType<typeof getSSHClient>>, path: string): Promise<'file' | 'directory' | 'missing'> {
@@ -139,55 +147,76 @@ export async function GET(
         },
       })
     } else {
-      const safeId = safeDownloadName(id)
-      const tarPath = `/tmp/craft-${safeId}-download-${Date.now()}.tar.gz`
+      // Flush the live world to disk so the snapshot is consistent, then stream
+      // `tar` straight from the remote stdout into the response. Autosave stays
+      // off for the whole stream (restored once it ends) so region files don't
+      // change mid-archive.
       let autosaveDisabled = false
-
       try {
-        try {
-          autosaveDisabled = await flushServerWorldForSnapshot(client, id)
-          const { stderr, code } = await execCommand(client, buildTarCommand(tarPath, paths))
+        autosaveDisabled = await flushServerWorldForSnapshot(client, id)
+      } catch {
+        autosaveDisabled = false
+      }
 
-          if (code !== 0) {
-            throw new Error(stderr.trim() || 'Archive failed')
-          }
-        } finally {
-          if (autosaveDisabled) {
-            await restoreServerWorldAutosave(client, id)
-          }
-        }
+      let channel: Awaited<ReturnType<typeof execStream>>
+      try {
+        channel = await execStream(client, buildTarCommand(paths))
       } catch (err) {
-        await execCommand(client, `rm -f ${shellQuote(tarPath)}`).catch(() => {})
+        if (autosaveDisabled) {
+          await restoreServerWorldAutosave(client, id).catch(() => {})
+        }
         throw err
       }
 
-      const sftp = await getSFTP(client)
-      const readStream = sftp.createReadStream(tarPath)
+      let restored = false
+      const restoreAutosave = () => {
+        if (restored) return
+        restored = true
+        if (autosaveDisabled) {
+          restoreServerWorldAutosave(client, id).catch(() => {})
+        }
+      }
+
       const downloadName = archiveFileName(paths)
 
       const stream = new ReadableStream({
         start(controller) {
-          readStream.on('data', (chunk: Buffer) => {
+          channel.on('data', (chunk: Buffer) => {
             controller.enqueue(chunk)
+            // Backpressure: if the consumer is slower than the SSH channel,
+            // stop reading until pull() is called, so a slow client doesn't
+            // make us buffer the whole (multi-GB) archive in memory.
+            if ((controller.desiredSize ?? 0) <= 0) {
+              channel.pause()
+            }
           })
-          readStream.on('end', () => {
+          // Drain stderr so the channel's flow-control window doesn't stall.
+          channel.stderr?.on('data', () => {})
+          channel.on('close', () => {
             controller.close()
-            execCommand(client, `rm -f ${shellQuote(tarPath)}`).catch(() => {})
+            restoreAutosave()
           })
-          readStream.on('error', (err: Error) => {
+          channel.on('error', (err: Error) => {
             controller.error(err)
-            execCommand(client, `rm -f ${shellQuote(tarPath)}`).catch(() => {})
+            restoreAutosave()
           })
         },
+        pull() {
+          channel.resume()
+        },
         cancel() {
-          readStream.destroy()
-          execCommand(client, `rm -f ${shellQuote(tarPath)}`).catch(() => {})
+          try {
+            channel.close()
+          } catch {
+            channel.destroy()
+          }
+          restoreAutosave()
         },
       })
 
       return new Response(stream, {
         headers: {
-          'Content-Type': 'application/gzip',
+          'Content-Type': 'application/x-tar',
           'Content-Disposition': `attachment; filename="${downloadName}"`,
         },
       })
